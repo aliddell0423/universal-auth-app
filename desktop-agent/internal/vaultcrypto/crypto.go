@@ -34,7 +34,7 @@ func Encrypt(pt *CredentialPlaintext, id, origin, pixelVaultKeyID string, pixelV
 		return nil, nil, err
 	}
 
-	ciphertext, cipherNonce, err := gcmEncrypt(dek, payload, credentialAAD(id, origin, pixelVaultKeyID))
+	ciphertext, cipherNonce, err := GCMEncrypt(dek, payload, credentialAAD(id, origin, pixelVaultKeyID))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -55,7 +55,7 @@ func Encrypt(pt *CredentialPlaintext, id, origin, pixelVaultKeyID string, pixelV
 	}
 	wrapPubB64 := base64.RawURLEncoding.EncodeToString(wrapPubDER)
 
-	wrapped, wrapNonce, err := gcmEncrypt(wrapKey, dek, wrapAAD(id, origin, pixelVaultKeyID, wrapPubB64))
+	wrapped, wrapNonce, err := GCMEncrypt(wrapKey, dek, wrapAAD(id, origin, pixelVaultKeyID, wrapPubB64))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -140,7 +140,7 @@ func deriveWrapKey(secret []byte, id, origin, pixelVaultKeyID string) ([]byte, e
 	return DeriveKey(secret, salt[:], info, 32)
 }
 
-func gcmEncrypt(key, plaintext, aad []byte) ([]byte, []byte, error) {
+func GCMEncrypt(key, plaintext, aad []byte) ([]byte, []byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, nil, err

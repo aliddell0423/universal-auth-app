@@ -62,17 +62,31 @@ class MainActivity : FragmentActivity() {
                     val request = pendingBiometricRequest
                     if (request != null) {
                         try {
-                            val signature = result.cryptoObject?.signature
-                                ?: throw KeyManagerException("Biometric result did not contain a signature")
-                            val payload = buildSigningPayload(request, "approved")
-                            signature.update(payload)
-                            val signed = signature.sign()
-                            val sigBase64 = Base64.getEncoder().encodeToString(signed)
-                            authViewModel.submitSignedApproval(
-                                request.id,
-                                keyManager.deviceId(),
-                                sigBase64
-                            )
+                            if (request.kind == "credential_release") {
+                                val release = request.releaseRequest
+                                    ?: throw KeyManagerException("No release request attached")
+                                authViewModel.performRelease(request, release) { error ->
+                                    if (error.isNotEmpty()) {
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            "Secure release failed: $error",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                }
+                            } else {
+                                val signature = result.cryptoObject?.signature
+                                    ?: throw KeyManagerException("Biometric result did not contain a signature")
+                                val payload = buildSigningPayload(request, "approved")
+                                signature.update(payload)
+                                val signed = signature.sign()
+                                val sigBase64 = Base64.getEncoder().encodeToString(signed)
+                                authViewModel.submitSignedApproval(
+                                    request.id,
+                                    keyManager.deviceId(),
+                                    sigBase64
+                                )
+                            }
                         } catch (e: Exception) {
                             Toast.makeText(
                                 this@MainActivity,
@@ -166,25 +180,46 @@ class MainActivity : FragmentActivity() {
             return
         }
 
-        try {
-            val signature = keyManager.createSignature()
+        if (request.kind == "credential_release") {
+            if (request.releaseRequest == null) {
+                Toast.makeText(this, "No secure release data", Toast.LENGTH_LONG).show()
+                return
+            }
+            if (authViewModel.uiState.value.trustedDesktop == null) {
+                Toast.makeText(this, "No trusted desktop registered", Toast.LENGTH_LONG).show()
+                return
+            }
             pendingBiometricRequest = request
             val promptInfo = BiometricPrompt.PromptInfo.Builder()
-                .setTitle("Approve authentication request")
+                .setTitle("Release credential")
                 .setSubtitle("${request.source} / ${request.resource}")
-                .setDescription("Authenticate to approve this request")
+                .setDescription("Authenticate to release this saved login")
                 .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
                 .setConfirmationRequired(true)
                 .setNegativeButtonText("Cancel")
                 .build()
-            biometricPrompt.authenticate(promptInfo, BiometricPrompt.CryptoObject(signature))
-        } catch (e: KeyManagerException) {
-            pendingBiometricRequest = null
-            Toast.makeText(
-                this,
-                e.message ?: "Approval key is not available",
-                Toast.LENGTH_LONG
-            ).show()
+            biometricPrompt.authenticate(promptInfo)
+        } else {
+            try {
+                val signature = keyManager.createSignature()
+                pendingBiometricRequest = request
+                val promptInfo = BiometricPrompt.PromptInfo.Builder()
+                    .setTitle("Approve authentication request")
+                    .setSubtitle("${request.source} / ${request.resource}")
+                    .setDescription("Authenticate to approve this request")
+                    .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+                    .setConfirmationRequired(true)
+                    .setNegativeButtonText("Cancel")
+                    .build()
+                biometricPrompt.authenticate(promptInfo, BiometricPrompt.CryptoObject(signature))
+            } catch (e: KeyManagerException) {
+                pendingBiometricRequest = null
+                Toast.makeText(
+                    this,
+                    e.message ?: "Approval key is not available",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
         }
     }
 }

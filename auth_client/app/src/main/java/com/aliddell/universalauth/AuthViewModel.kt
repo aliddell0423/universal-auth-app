@@ -3,13 +3,20 @@ package com.aliddell.universalauth
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.aliddell.universalauth.crypto.SecureRelease
+import com.aliddell.universalauth.crypto.VaultKeyManager
 import com.aliddell.universalauth.data.AuthRepository
 import com.aliddell.universalauth.data.AuthRequest
 import com.aliddell.universalauth.data.DeviceRegistrationWithVault
+import com.aliddell.universalauth.data.ReleaseRequest
 import com.aliddell.universalauth.data.ReleaseResponse
+import com.aliddell.universalauth.data.TrustedDesktop
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.util.Base64
 
 class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
     private val _uiState = MutableStateFlow(UiState())
@@ -17,6 +24,17 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
 
     init {
         refresh()
+        loadTrustedDesktop()
+    }
+
+    fun loadTrustedDesktop() {
+        viewModelScope.launch {
+            val result = repository.getTrustedDesktop()
+            _uiState.value = _uiState.value.copy(
+                trustedDesktop = result.getOrNull(),
+                error = result.exceptionOrNull()?.message ?: _uiState.value.error
+            )
+        }
     }
 
     fun refresh() {
@@ -124,11 +142,58 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
         }
     }
 
+    fun performRelease(
+        request: AuthRequest,
+        release: ReleaseRequest,
+        onResult: (String) -> Unit
+    ) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(loading = true, error = null)
+            val trusted = _uiState.value.trustedDesktop
+            if (trusted == null) {
+                _uiState.value = _uiState.value.copy(loading = false, error = "No trusted desktop registered")
+                onResult("No trusted desktop registered")
+                return@launch
+            }
+            try {
+                val response = withContext(Dispatchers.IO) {
+                    val desktopPublic = Base64.getDecoder().decode(trusted.public_key)
+                    val vaultKeyManager = VaultKeyManager()
+                    SecureRelease.process(
+                        requestId = request.id,
+                        challenge = request.challenge,
+                        clientNonce = request.clientNonce,
+                        release = release,
+                        pinnedDesktopId = trusted.desktop_id,
+                        pinnedDesktopPublic = desktopPublic,
+                        pinnedPixelVaultKeyId = vaultKeyManager.keyId(),
+                        vaultKeyManager = vaultKeyManager
+                    )
+                }
+                val result = repository.submitReleaseResponse(request.id, response)
+                if (result.isSuccess) {
+                    _uiState.value = _uiState.value.copy(loading = false, error = null)
+                    onResult("")
+                    refresh()
+                } else {
+                    val msg = result.exceptionOrNull()?.message ?: "Release response failed"
+                    _uiState.value = _uiState.value.copy(loading = false, error = msg)
+                    onResult(msg)
+                }
+            } catch (e: Exception) {
+                val msg = e.message ?: e.javaClass.simpleName
+                _uiState.value = _uiState.value.copy(loading = false, error = msg)
+                onResult(msg)
+            }
+        }
+    }
+
     data class UiState(
         val loading: Boolean = true,
         val status: String = "unknown",
         val deviceRegistered: Boolean = false,
         val requests: List<AuthRequest> = emptyList(),
+        val trustedDesktop: TrustedDesktop? = null,
         val error: String? = null
     )
 

@@ -73,11 +73,10 @@ object SecureRelease {
             "credential_release", pkg.origin, pkg.credentialId, release.packageHash,
             release.desktopEphemeralPublic, pkg.pixelVaultKeyId
         )
-        val digest = MessageDigest.getInstance("SHA-256").digest(signedPayload)
         val sig = Base64.getDecoder().decode(release.desktopSignature)
         val verifier = Signature.getInstance("SHA256withECDSA")
         verifier.initVerify(desktopPublic)
-        verifier.update(digest)
+        verifier.update(signedPayload)
         if (!verifier.verify(sig)) {
             throw SecurityException("invalid desktop signature")
         }
@@ -116,12 +115,11 @@ object SecureRelease {
         )
 
         val transferNonce = randomBytes(12)
-        val fedoraEphemeralPublic = base64url(responseKeyPair.public.encoded)
         val pixelEphemeralPublic = base64url(responseKeyPair.public.encoded)
         val aad = transferAAD(
             requestId, challenge, clientNonce, release.desktopId,
             pkg.credentialId, pkg.origin, release.packageHash, pkg.pixelVaultKeyId,
-            fedoraEphemeralPublic, pixelEphemeralPublic
+            release.desktopEphemeralPublic, pixelEphemeralPublic
         )
         val encryptedDek = aesGcmEncrypt(transferKey, dek, transferNonce, aad)
 
@@ -129,7 +127,7 @@ object SecureRelease {
             credentialId = pkg.credentialId,
             packageHash = release.packageHash,
             pixelVaultKeyId = pkg.pixelVaultKeyId,
-            pixelEphemeralPublic = base64url(responseKeyPair.public.encoded),
+            pixelEphemeralPublic = pixelEphemeralPublic,
             transferNonce = base64url(transferNonce),
             encryptedDek = base64url(encryptedDek)
         )
@@ -144,23 +142,27 @@ object SecureRelease {
     }
 
     private fun parsePackage(s: String): Package {
-        val map = s.trimEnd().split("\n").associate { line ->
+        val lines = s.trimEnd().split("\n")
+        if (lines.isEmpty() || lines[0] != "universal-auth:vault-package:v2") {
+            throw SecurityException("invalid package header")
+        }
+        val map = lines.drop(1).associate { line ->
             val idx = line.indexOf('=')
-            if (idx < 0) throw SecurityException("invalid package line")
+            if (idx < 0) throw SecurityException("invalid package line: $line")
             line.substring(0, idx) to line.substring(idx + 1)
         }
-        val credentialId = String(base64urlDecode(map["credential_id"]!!), StandardCharsets.UTF_8)
-        val origin = String(base64urlDecode(map["origin"]!!), StandardCharsets.UTF_8)
+        val credentialId = String(base64urlDecode(map["credential_id"] ?: throw SecurityException("missing credential_id")), StandardCharsets.UTF_8)
+        val origin = String(base64urlDecode(map["origin"] ?: throw SecurityException("missing origin")), StandardCharsets.UTF_8)
         return Package(
             credentialId = credentialId,
             origin = origin,
-            ciphertext = base64urlDecode(map["ciphertext"]!!),
-            cipherNonce = base64urlDecode(map["cipher_nonce"]!!),
-            wrappedDek = base64urlDecode(map["wrapped_dek"]!!),
-            wrapNonce = base64urlDecode(map["wrap_nonce"]!!),
-            wrapEphemeralPublic = base64urlDecode(map["wrap_ephemeral_public_key"]!!),
-            pixelVaultKeyId = map["pixel_vault_key_id"]!!,
-            cryptoVersion = map["crypto_version"]!!.toInt()
+            ciphertext = base64urlDecode(map["ciphertext"] ?: throw SecurityException("missing ciphertext")),
+            cipherNonce = base64urlDecode(map["cipher_nonce"] ?: throw SecurityException("missing cipher_nonce")),
+            wrappedDek = base64urlDecode(map["wrapped_dek"] ?: throw SecurityException("missing wrapped_dek")),
+            wrapNonce = base64urlDecode(map["wrap_nonce"] ?: throw SecurityException("missing wrap_nonce")),
+            wrapEphemeralPublic = base64urlDecode(map["wrap_ephemeral_public_key"] ?: throw SecurityException("missing wrap_ephemeral_public_key")),
+            pixelVaultKeyId = map["pixel_vault_key_id"] ?: throw SecurityException("missing pixel_vault_key_id"),
+            cryptoVersion = (map["crypto_version"] ?: throw SecurityException("missing crypto_version")).toInt()
         )
     }
 

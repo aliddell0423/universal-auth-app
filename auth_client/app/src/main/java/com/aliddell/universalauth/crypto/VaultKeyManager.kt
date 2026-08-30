@@ -55,11 +55,7 @@ class VaultKeyManager(
 
     fun createKeyAgreement(): KeyAgreement {
         val keyPair = ensureKey()
-        val agreement = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            KeyAgreement.getInstance("ECDH", "AndroidKeyStore")
-        } else {
-            KeyAgreement.getInstance("ECDH")
-        }
+        val agreement = KeyAgreement.getInstance("ECDH")
         try {
             agreement.init(keyPair.private)
         } catch (e: android.security.keystore.UserNotAuthenticatedException) {
