@@ -1,0 +1,8 @@
+universal-auth:v1
+request_id=MDEyMzQ1Njc4OWFiY2RlZg
+challenge=dGVzdC1jaGFsbGVuZ2U
+decision=YXBwcm92ZWQ
+source=YW5kcmV3LWZlZG9yYQ
+kind=dGVzdA
+resource=ZGV2ZWxvcG1lbnQ
+message=UGxlYXNlIGF1dGhlbnRpY2F0ZQ

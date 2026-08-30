@@ -1,7 +1,11 @@
 package main
 
 import (
+	"crypto/ecdsa"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"sync"
@@ -16,15 +20,23 @@ const (
 	StatusDenied   RequestStatus = "denied"
 )
 
+type ApprovalProof struct {
+	DeviceID  string `json:"device_id"`
+	Algorithm string `json:"algorithm"`
+	Signature string `json:"signature"`
+}
+
 type Request struct {
-	ID        string        `json:"id"`
-	Source    string        `json:"source"`
-	Kind      string        `json:"kind"`
-	Resource  string        `json:"resource"`
-	Message   string        `json:"message"`
-	Status    RequestStatus `json:"status"`
-	CreatedAt time.Time     `json:"created_at"`
-	DecidedAt *time.Time    `json:"decided_at,omitempty"`
+	ID            string         `json:"id"`
+	Source        string         `json:"source"`
+	Kind          string         `json:"kind"`
+	Resource      string         `json:"resource"`
+	Message       string         `json:"message"`
+	Challenge     string         `json:"challenge"`
+	Status        RequestStatus  `json:"status"`
+	CreatedAt     time.Time      `json:"created_at"`
+	DecidedAt     *time.Time     `json:"decided_at,omitempty"`
+	ApprovalProof *ApprovalProof `json:"approval_proof,omitempty"`
 }
 
 type CreateRequest struct {
@@ -35,18 +47,31 @@ type CreateRequest struct {
 }
 
 type Decision struct {
-	Decision string `json:"decision"`
+	Decision  string `json:"decision"`
+	DeviceID  string `json:"device_id,omitempty"`
+	Signature string `json:"signature,omitempty"`
+}
+
+type Device struct {
+	DeviceID  string
+	Name      string
+	Algorithm string
+	PublicKey *ecdsa.PublicKey
 }
 
 var (
-	ErrRequestNotFound     = errors.New("request not found")
-	ErrInvalidDecision     = errors.New("invalid decision value")
+	ErrRequestNotFound       = errors.New("request not found")
+	ErrInvalidDecision       = errors.New("invalid decision value")
 	ErrRequestAlreadyDecided = errors.New("request already decided")
+	ErrDeviceAlreadyTrusted  = errors.New("a different device is already trusted")
+	ErrDeviceNotFound        = errors.New("device not registered")
+	ErrInvalidSignature      = errors.New("invalid signature")
 )
 
 type Store struct {
-	mu   sync.RWMutex
-	reqs map[string]*Request
+	mu     sync.RWMutex
+	reqs   map[string]*Request
+	device *Device
 }
 
 func NewStore() *Store {
@@ -58,6 +83,10 @@ func (s *Store) Create(source, kind, resource, message string) (*Request, error)
 	if err != nil {
 		return nil, err
 	}
+	challenge, err := generateChallenge()
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC()
 	req := &Request{
 		ID:        id,
@@ -65,6 +94,7 @@ func (s *Store) Create(source, kind, resource, message string) (*Request, error)
 		Kind:      kind,
 		Resource:  resource,
 		Message:   message,
+		Challenge: challenge,
 		Status:    StatusPending,
 		CreatedAt: now,
 	}
@@ -98,11 +128,35 @@ func (s *Store) ListPending() []*Request {
 	return out
 }
 
-func (s *Store) Decide(id, decision string) (*Request, error) {
+func (s *Store) RegisterDevice(device *Device) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.device != nil {
+		if deviceID(s.device.PublicKey) != deviceID(device.PublicKey) {
+			return ErrDeviceAlreadyTrusted
+		}
+		return nil
+	}
+	s.device = device
+	return nil
+}
+
+func (s *Store) TrustedDevice() *Device {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.device == nil {
+		return nil
+	}
+	cp := *s.device
+	return &cp
+}
+
+func (s *Store) Decide(id, decision string, proof *ApprovalProof) (*Request, error) {
 	d := RequestStatus(decision)
 	if d != StatusApproved && d != StatusDenied {
 		return nil, ErrInvalidDecision
 	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, ok := s.reqs[id]
@@ -112,9 +166,32 @@ func (s *Store) Decide(id, decision string) (*Request, error) {
 	if r.Status != StatusPending {
 		return nil, ErrRequestAlreadyDecided
 	}
+
+	if d == StatusApproved {
+		if proof == nil {
+			return nil, ErrInvalidSignature
+		}
+		device := s.device
+		if device == nil {
+			return nil, ErrDeviceNotFound
+		}
+		payload := buildSigningPayload(r, "approved")
+		hash := sha256.Sum256(payload)
+		sig, err := base64.StdEncoding.DecodeString(proof.Signature)
+		if err != nil {
+			return nil, ErrInvalidSignature
+		}
+		if !ecdsa.VerifyASN1(device.PublicKey, hash[:], sig) {
+			return nil, ErrInvalidSignature
+		}
+	}
+
 	now := time.Now().UTC()
 	r.Status = d
 	r.DecidedAt = &now
+	if d == StatusApproved && proof != nil {
+		r.ApprovalProof = proof
+	}
 	cp := *r
 	return &cp, nil
 }
@@ -125,4 +202,21 @@ func generateID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+func generateChallenge() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+func deviceID(pub *ecdsa.PublicKey) string {
+	der, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(der)
+	return hex.EncodeToString(sum[:])
 }

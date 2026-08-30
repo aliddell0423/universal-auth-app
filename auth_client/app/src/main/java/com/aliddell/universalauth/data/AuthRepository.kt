@@ -14,8 +14,25 @@ import okhttp3.RequestBody.Companion.toRequestBody
 interface AuthRepository {
     suspend fun checkHealth(): Result<String>
     suspend fun getPendingRequests(): Result<List<AuthRequest>>
-    suspend fun submitDecision(id: String, decision: String): Result<AuthRequest>
+    suspend fun registerDevice(deviceId: String, name: String, algorithm: String, publicKey: String): Result<Unit>
+    suspend fun submitSignedApproval(id: String, deviceId: String, signature: String): Result<AuthRequest>
+    suspend fun submitDenial(id: String): Result<AuthRequest>
 }
+
+@kotlinx.serialization.Serializable
+private data class DeviceRegistration(
+    val device_id: String,
+    val name: String,
+    val algorithm: String,
+    val public_key: String
+)
+
+@kotlinx.serialization.Serializable
+private data class SignedDecision(
+    val decision: String,
+    val device_id: String,
+    val signature: String
+)
 
 class DefaultAuthRepository(
     private val client: OkHttpClient = OkHttpClient(),
@@ -49,8 +66,53 @@ class DefaultAuthRepository(
         }
     }
 
-    override suspend fun submitDecision(id: String, decision: String): Result<AuthRequest> = withContext(Dispatchers.IO) {
-        val payload = json.encodeToString(Decision(decision))
+    override suspend fun registerDevice(
+        deviceId: String,
+        name: String,
+        algorithm: String,
+        publicKey: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val payload = json.encodeToString(
+            DeviceRegistration(deviceId, name, algorithm, publicKey)
+        )
+        val body = payload.toRequestBody(mediaType)
+        val request = Request.Builder()
+            .url("$baseUrl/v1/devices/register")
+            .post(body)
+            .header("Authorization", "Bearer $token")
+            .header("Content-Type", "application/json")
+            .build()
+        runCatching {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
+            }
+        }
+    }
+
+    override suspend fun submitSignedApproval(
+        id: String,
+        deviceId: String,
+        signature: String
+    ): Result<AuthRequest> = withContext(Dispatchers.IO) {
+        val payload = json.encodeToString(SignedDecision("approved", deviceId, signature))
+        val body = payload.toRequestBody(mediaType)
+        val request = Request.Builder()
+            .url("$baseUrl/v1/requests/$id/decision")
+            .post(body)
+            .header("Authorization", "Bearer $token")
+            .header("Content-Type", "application/json")
+            .build()
+        runCatching {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
+                val responseBody = response.body.string()
+                json.decodeFromString<AuthRequest>(responseBody)
+            }
+        }
+    }
+
+    override suspend fun submitDenial(id: String): Result<AuthRequest> = withContext(Dispatchers.IO) {
+        val payload = json.encodeToString(Decision("denied"))
         val body = payload.toRequestBody(mediaType)
         val request = Request.Builder()
             .url("$baseUrl/v1/requests/$id/decision")

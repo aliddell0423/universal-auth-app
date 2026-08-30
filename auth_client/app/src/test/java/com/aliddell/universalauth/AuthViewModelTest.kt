@@ -10,6 +10,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -35,6 +36,7 @@ class AuthViewModelTest {
             kind = "test",
             resource = "dev",
             message = "msg",
+            challenge = "challenge",
             status = "pending",
             createdAt = "2026-08-30T12:00:00Z",
             decidedAt = null
@@ -59,19 +61,30 @@ class AuthViewModelTest {
     }
 
     @Test
-    fun decide_approvalRefreshesList() {
+    fun registerDevice_updatesDeviceRegistered() {
+        val viewModel = AuthViewModel(FakeAuthRepository())
+        viewModel.registerDevice("id", "Pixel 10", "ECDSA_P256_SHA256", "pubkey")
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertTrue(viewModel.uiState.value.deviceRegistered)
+        assertNull(viewModel.uiState.value.error)
+    }
+
+    @Test
+    fun submitSignedApproval_refreshesList() {
         val request = AuthRequest(
             id = "1",
             source = "pc",
             kind = "test",
             resource = "dev",
             message = "msg",
+            challenge = "challenge",
             status = "pending",
             createdAt = "2026-08-30T12:00:00Z",
             decidedAt = null
         )
         val viewModel = AuthViewModel(FakeAuthRepository(requests = listOf(request)))
-        viewModel.decide("1", true)
+        viewModel.submitSignedApproval("1", "id", "signature")
         testDispatcher.scheduler.advanceUntilIdle()
 
         assertEquals("connected", viewModel.uiState.value.status)
@@ -85,6 +98,7 @@ class AuthViewModelTest {
             kind = "test",
             resource = "dev",
             message = "msg",
+            challenge = "challenge",
             status = "pending",
             createdAt = "2026-08-30T12:00:00Z",
             decidedAt = null
@@ -107,7 +121,20 @@ class AuthViewModelTest {
         override suspend fun getPendingRequests(): Result<List<AuthRequest>> =
             Result.success(requests)
 
-        override suspend fun submitDecision(id: String, decision: String): Result<AuthRequest> =
+        override suspend fun registerDevice(
+            deviceId: String,
+            name: String,
+            algorithm: String,
+            publicKey: String
+        ): Result<Unit> = Result.success(Unit)
+
+        override suspend fun submitSignedApproval(
+            id: String,
+            deviceId: String,
+            signature: String
+        ): Result<AuthRequest> = Result.success(requests.first { it.id == id })
+
+        override suspend fun submitDenial(id: String): Result<AuthRequest> =
             Result.success(requests.first { it.id == id })
     }
 }

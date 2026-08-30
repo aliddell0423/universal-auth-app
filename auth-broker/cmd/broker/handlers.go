@@ -1,7 +1,11 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/subtle"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -14,12 +18,20 @@ const (
 	v1Prefix         = "/v1/"
 )
 
+type DeviceRegistration struct {
+	DeviceID  string `json:"device_id"`
+	Name      string `json:"name"`
+	Algorithm string `json:"algorithm"`
+	PublicKey string `json:"public_key"`
+}
+
 func newServer(store *Store, token string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", handleHealth)
 	mux.HandleFunc("/v1/requests/pending", func(w http.ResponseWriter, r *http.Request) { handleListPending(w, r, store) })
 	mux.HandleFunc("/v1/requests/", func(w http.ResponseWriter, r *http.Request) { handleRequestByID(w, r, store) })
 	mux.HandleFunc("/v1/requests", func(w http.ResponseWriter, r *http.Request) { handleCreate(w, r, store) })
+	mux.HandleFunc("/v1/devices/register", func(w http.ResponseWriter, r *http.Request) { handleRegisterDevice(w, r, store) })
 	return authMiddleware(mux, token)
 }
 
@@ -102,21 +114,99 @@ func handleDecision(w http.ResponseWriter, r *http.Request, store *Store, id str
 		writeError(w, http.StatusBadRequest, "malformed or invalid JSON")
 		return
 	}
-	req, err := store.Decide(id, d.Decision)
+	if d.Decision != "approved" && d.Decision != "denied" {
+		writeError(w, http.StatusBadRequest, "invalid decision value")
+		return
+	}
+
+	var proof *ApprovalProof
+	if d.Decision == "approved" {
+		proof = &ApprovalProof{
+			DeviceID:  d.DeviceID,
+			Algorithm: "ECDSA_P256_SHA256",
+			Signature: d.Signature,
+		}
+	}
+
+	req, err := store.Decide(id, d.Decision, proof)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrRequestNotFound):
 			writeError(w, http.StatusNotFound, "request not found")
 		case errors.Is(err, ErrInvalidDecision):
-			writeError(w, http.StatusBadRequest, "invalid decision")
+			writeError(w, http.StatusBadRequest, "invalid decision value")
 		case errors.Is(err, ErrRequestAlreadyDecided):
 			writeError(w, http.StatusConflict, "request already decided")
+		case errors.Is(err, ErrDeviceNotFound):
+			writeError(w, http.StatusForbidden, "device not registered")
+		case errors.Is(err, ErrInvalidSignature):
+			writeError(w, http.StatusForbidden, "invalid signature")
 		default:
 			writeError(w, http.StatusInternalServerError, "internal error")
 		}
 		return
 	}
 	writeJSON(w, http.StatusOK, req)
+}
+
+func handleRegisterDevice(w http.ResponseWriter, r *http.Request, store *Store) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var reg DeviceRegistration
+	if err := decodeJSON(w, r, &reg); err != nil {
+		writeError(w, http.StatusBadRequest, "malformed or invalid JSON")
+		return
+	}
+	if reg.Algorithm != "ECDSA_P256_SHA256" {
+		writeError(w, http.StatusBadRequest, "unsupported algorithm")
+		return
+	}
+	if reg.DeviceID == "" || reg.Name == "" || reg.PublicKey == "" {
+		writeError(w, http.StatusBadRequest, "missing required fields")
+		return
+	}
+
+	der, err := base64.StdEncoding.DecodeString(reg.PublicKey)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid public key encoding")
+		return
+	}
+	pubAny, err := x509.ParsePKIXPublicKey(der)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid public key")
+		return
+	}
+	pub, ok := pubAny.(*ecdsa.PublicKey)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "public key must be ECDSA")
+		return
+	}
+	if pub.Curve != elliptic.P256() {
+		writeError(w, http.StatusBadRequest, "public key must be P-256")
+		return
+	}
+	if deviceID(pub) != reg.DeviceID {
+		writeError(w, http.StatusBadRequest, "device_id does not match public key")
+		return
+	}
+
+	err = store.RegisterDevice(&Device{
+		DeviceID:  reg.DeviceID,
+		Name:      reg.Name,
+		Algorithm: reg.Algorithm,
+		PublicKey: pub,
+	})
+	if err != nil {
+		if errors.Is(err, ErrDeviceAlreadyTrusted) {
+			writeError(w, http.StatusConflict, "a different device is already registered")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {

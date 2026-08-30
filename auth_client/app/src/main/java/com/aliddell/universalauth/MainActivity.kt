@@ -3,7 +3,6 @@ package com.aliddell.universalauth
 
 import android.os.Bundle
 import android.widget.Toast
-import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.biometric.BiometricManager
@@ -31,8 +30,14 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
+import com.aliddell.universalauth.crypto.ApprovalKeyManager
+import com.aliddell.universalauth.crypto.KeyManagerException
+import com.aliddell.universalauth.crypto.buildSigningPayload
 import com.aliddell.universalauth.data.AuthRequest
 import com.aliddell.universalauth.data.DefaultAuthRepository
+import java.security.Signature
+import java.util.Base64
 
 class MainActivity : FragmentActivity() {
 
@@ -40,7 +45,8 @@ class MainActivity : FragmentActivity() {
         AuthViewModel.Factory(DefaultAuthRepository())
     }
 
-    private var pendingBiometricRequestId: String? = null
+    private val keyManager = ApprovalKeyManager()
+    private var pendingBiometricRequest: AuthRequest? = null
     private lateinit var biometricPrompt: BiometricPrompt
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -51,20 +57,40 @@ class MainActivity : FragmentActivity() {
             object : BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                     super.onAuthenticationSucceeded(result)
-                    pendingBiometricRequestId?.let { id ->
-                        authViewModel.decide(id, true)
+                    val request = pendingBiometricRequest
+                    if (request != null) {
+                        try {
+                            val signature = result.cryptoObject?.signature
+                                ?: throw KeyManagerException("Biometric result did not contain a signature")
+                            val payload = buildSigningPayload(request, "approved")
+                            signature.update(payload)
+                            val signed = signature.sign()
+                            val sigBase64 = Base64.getEncoder().encodeToString(signed)
+                            authViewModel.submitSignedApproval(
+                                request.id,
+                                keyManager.deviceId(),
+                                sigBase64
+                            )
+                        } catch (e: Exception) {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Signing failed: ${e.message}",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        } finally {
+                            pendingBiometricRequest = null
+                        }
                     }
-                    pendingBiometricRequestId = null
                 }
 
                 override fun onAuthenticationFailed() {
                     super.onAuthenticationFailed()
-                    pendingBiometricRequestId = null
+                    // Do not clear the pending request; the system prompt may continue.
                 }
 
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
                     super.onAuthenticationError(errorCode, errString)
-                    pendingBiometricRequestId = null
+                    pendingBiometricRequest = null
                     if (errorCode != BiometricPrompt.ERROR_USER_CANCELED &&
                         errorCode != BiometricPrompt.ERROR_CANCELED
                     ) {
@@ -76,6 +102,22 @@ class MainActivity : FragmentActivity() {
                     }
                 }
             })
+
+        try {
+            keyManager.ensureKey()
+            authViewModel.registerDevice(
+                keyManager.deviceId(),
+                "Pixel 10",
+                "ECDSA_P256_SHA256",
+                keyManager.publicKeyEncoded()
+            )
+        } catch (e: KeyManagerException) {
+            Toast.makeText(
+                this,
+                e.message ?: "Approval key is not available",
+                Toast.LENGTH_LONG
+            ).show()
+        }
 
         setContent {
             val state = authViewModel.uiState.collectAsState()
@@ -89,7 +131,12 @@ class MainActivity : FragmentActivity() {
     }
 
     private fun onApprove(request: AuthRequest) {
-        if (pendingBiometricRequestId != null) return
+        if (pendingBiometricRequest != null) return
+
+        if (!authViewModel.uiState.value.deviceRegistered) {
+            Toast.makeText(this, "Device is not registered for signed approval", Toast.LENGTH_LONG).show()
+            return
+        }
 
         val canAuth = BiometricManager.from(this)
             .canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG)
@@ -108,16 +155,26 @@ class MainActivity : FragmentActivity() {
             return
         }
 
-        pendingBiometricRequestId = request.id
-        val promptInfo = BiometricPrompt.PromptInfo.Builder()
-            .setTitle("Approve authentication request")
-            .setSubtitle("${request.source} / ${request.resource}")
-            .setDescription("Authenticate to approve this request")
-            .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
-            .setConfirmationRequired(true)
-            .setNegativeButtonText("Cancel")
-            .build()
-        biometricPrompt.authenticate(promptInfo)
+        try {
+            val signature = keyManager.createSignature()
+            pendingBiometricRequest = request
+            val promptInfo = BiometricPrompt.PromptInfo.Builder()
+                .setTitle("Approve authentication request")
+                .setSubtitle("${request.source} / ${request.resource}")
+                .setDescription("Authenticate to approve this request")
+                .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+                .setConfirmationRequired(true)
+                .setNegativeButtonText("Cancel")
+                .build()
+            biometricPrompt.authenticate(promptInfo, BiometricPrompt.CryptoObject(signature))
+        } catch (e: KeyManagerException) {
+            pendingBiometricRequest = null
+            Toast.makeText(
+                this,
+                e.message ?: "Approval key is not available",
+                Toast.LENGTH_LONG
+            ).show()
+        }
     }
 }
 
@@ -138,6 +195,9 @@ fun PendingRequestsScreen(
         ) {
             Text("Broker: 192.168.1.167")
             Text("Status: ${state.status}")
+            if (!state.deviceRegistered) {
+                Text("Device not registered", color = MaterialTheme.colorScheme.error)
+            }
             Spacer(modifier = Modifier.height(8.dp))
             Button(onClick = onRefresh) { Text("Refresh") }
             Spacer(modifier = Modifier.height(8.dp))
@@ -149,7 +209,8 @@ fun PendingRequestsScreen(
                     RequestCard(
                         request = request,
                         onApprove = { onApprove(request) },
-                        onDeny = { onDeny(request) }
+                        onDeny = { onDeny(request) },
+                        approveEnabled = state.deviceRegistered
                     )
                 }
             }
@@ -161,7 +222,8 @@ fun PendingRequestsScreen(
 fun RequestCard(
     request: AuthRequest,
     onApprove: () -> Unit,
-    onDeny: () -> Unit
+    onDeny: () -> Unit,
+    approveEnabled: Boolean
 ) {
     Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
         Column(modifier = Modifier.padding(16.dp)) {
@@ -175,7 +237,7 @@ fun RequestCard(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Button(onClick = onDeny) { Text("Deny") }
-                Button(onClick = onApprove) { Text("Approve") }
+                Button(onClick = onApprove, enabled = approveEnabled) { Text("Approve") }
             }
         }
     }

@@ -39,14 +39,58 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
         }
     }
 
-    fun decide(id: String, approved: Boolean) {
+    fun registerDevice(deviceId: String, name: String, algorithm: String, publicKey: String) {
+        _uiState.value = _uiState.value.copy(loading = true, error = null)
         viewModelScope.launch {
-            val decision = if (approved) "approved" else "denied"
-            val result = repository.submitDecision(id, decision)
+            val result = repository.registerDevice(deviceId, name, algorithm, publicKey)
+            if (result.isSuccess) {
+                _uiState.value = _uiState.value.copy(
+                    loading = false,
+                    deviceRegistered = true,
+                    error = null
+                )
+            } else {
+                _uiState.value = _uiState.value.copy(
+                    loading = false,
+                    deviceRegistered = false,
+                    error = result.exceptionOrNull()?.message
+                )
+            }
+        }
+    }
+
+    fun decide(id: String, approved: Boolean) {
+        if (!approved) {
+            submitDenial(id)
+        }
+    }
+
+    private fun submitDenial(id: String) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(loading = true, error = null)
+            val result = repository.submitDenial(id)
             if (result.isSuccess) {
                 refresh()
             } else {
-                _uiState.value = _uiState.value.copy(error = result.exceptionOrNull()?.message)
+                _uiState.value = _uiState.value.copy(
+                    loading = false,
+                    error = result.exceptionOrNull()?.message
+                )
+            }
+        }
+    }
+
+    fun submitSignedApproval(id: String, deviceId: String, signature: String) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(loading = true, error = null)
+            val result = repository.submitSignedApproval(id, deviceId, signature)
+            if (result.isSuccess) {
+                refresh()
+            } else {
+                _uiState.value = _uiState.value.copy(
+                    loading = false,
+                    error = result.exceptionOrNull()?.message
+                )
             }
         }
     }
@@ -54,6 +98,7 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
     data class UiState(
         val loading: Boolean = true,
         val status: String = "unknown",
+        val deviceRegistered: Boolean = false,
         val requests: List<AuthRequest> = emptyList(),
         val error: String? = null
     )
