@@ -1,0 +1,13 @@
+# syntax=docker/dockerfile:1
+FROM golang:1.26 AS builder
+
+WORKDIR /build
+COPY go.mod ./
+COPY cmd ./cmd
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags="-w -s" -o /build/auth-broker ./cmd/broker
+
+FROM scratch
+COPY --from=builder --chown=65534:65534 /build/auth-broker /auth-broker
+USER 65534:65534
+EXPOSE 8080
+ENTRYPOINT ["/auth-broker"]

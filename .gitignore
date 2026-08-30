@@ -1,0 +1,22 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editors
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Local environment / secrets
+.env
+.env.*
+
+# Build artifacts
+auth-broker/broker
+auth-broker/auth-broker
+*.exe
+
+# Logs
+*.log

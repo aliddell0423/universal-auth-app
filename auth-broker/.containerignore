@@ -1,0 +1,6 @@
+.git
+Containerfile
+.containerignore
+README.md
+*.md
+.devin
