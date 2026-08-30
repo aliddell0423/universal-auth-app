@@ -20,3 +20,28 @@ auth-broker/auth-broker
 
 # Logs
 *.log
+
+# Android / Kotlin
+build/
+.gradle/
+local.properties
+*.iml
+.cxx/
+.externalNativeBuild/
+captures/
+.navigation/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+bin/
+gen/
+out/
+*.hprof
+*.keystore
+*.jks
+key.properties
+google-services.json
+*.credentials.properties
+
