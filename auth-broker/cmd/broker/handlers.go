@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -139,6 +140,8 @@ func handleDecision(w http.ResponseWriter, r *http.Request, store *Store, id str
 			writeError(w, http.StatusConflict, "request already decided")
 		case errors.Is(err, ErrDeviceNotFound):
 			writeError(w, http.StatusForbidden, "device not registered")
+		case errors.Is(err, ErrDeviceMismatch):
+			writeError(w, http.StatusForbidden, "device id does not match the trusted device")
 		case errors.Is(err, ErrInvalidSignature):
 			writeError(w, http.StatusForbidden, "invalid signature")
 		default:
@@ -214,7 +217,13 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	defer r.Body.Close()
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
-	return dec.Decode(dst)
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(new(struct{})); err != io.EOF {
+		return errors.New("trailing data in request body")
+	}
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

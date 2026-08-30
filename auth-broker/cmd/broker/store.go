@@ -65,6 +65,7 @@ var (
 	ErrRequestAlreadyDecided = errors.New("request already decided")
 	ErrDeviceAlreadyTrusted  = errors.New("a different device is already trusted")
 	ErrDeviceNotFound        = errors.New("device not registered")
+	ErrDeviceMismatch        = errors.New("device id does not match the trusted device")
 	ErrInvalidSignature      = errors.New("invalid signature")
 )
 
@@ -174,6 +175,9 @@ func (s *Store) Decide(id, decision string, proof *ApprovalProof) (*Request, err
 		device := s.device
 		if device == nil {
 			return nil, ErrDeviceNotFound
+		}
+		if proof.DeviceID != device.DeviceID {
+			return nil, ErrDeviceMismatch
 		}
 		payload := buildSigningPayload(r, "approved")
 		hash := sha256.Sum256(payload)

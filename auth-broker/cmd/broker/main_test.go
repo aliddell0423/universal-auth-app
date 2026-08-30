@@ -557,6 +557,24 @@ func TestSignedApprovalSecurity(t *testing.T) {
 			t.Fatalf("expected 409, got %d", resp.StatusCode)
 		}
 	})
+
+	t.Run("wrong device id with valid signature", func(t *testing.T) {
+		srv := newTestServer(t)
+		defer srv.Close()
+		registerDevice(t, srv, &priv.PublicKey)
+		req := createRequest(t, srv)
+		sig := signPayload(t, priv, &req)
+		payload := fmt.Sprintf(`{"decision":"approved","device_id":"wrong-device-id","signature":"%s"}`, sig)
+		resp := doRequest(t, srv, http.MethodPost, "/v1/requests/"+req.ID+"/decision", "Bearer "+testToken, strings.NewReader(payload))
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d", resp.StatusCode)
+		}
+		got, _ := storeFromGet(t, srv, req.ID)
+		if got.Status != StatusPending {
+			t.Fatalf("request should remain pending, got %s", got.Status)
+		}
+	})
 }
 
 func storeFromGet(t *testing.T, srv *httptest.Server, id string) (Request, bool) {
@@ -568,6 +586,18 @@ func storeFromGet(t *testing.T, srv *httptest.Server, id string) (Request, bool)
 		t.Fatalf("decode: %v", err)
 	}
 	return got, resp.StatusCode == http.StatusOK
+}
+
+func TestTrailingJSON(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	req := createRequest(t, srv)
+	payload := `{"decision":"denied"} {"junk":true}`
+	resp := doRequest(t, srv, http.MethodPost, "/v1/requests/"+req.ID+"/decision", "Bearer "+testToken, strings.NewReader(payload))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
 }
 
 func TestCanonicalPayload(t *testing.T) {
