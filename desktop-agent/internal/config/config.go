@@ -8,10 +8,13 @@ import (
 )
 
 type TrustedDevice struct {
-	DeviceID  string `json:"device_id"`
-	Name      string `json:"name"`
-	Algorithm string `json:"algorithm"`
-	PublicKey string `json:"public_key"`
+	DeviceID    string `json:"device_id"`
+	Name        string `json:"name"`
+	Algorithm   string `json:"algorithm"`
+	PublicKey   string `json:"public_key"`
+	VaultKeyID  string `json:"vault_key_id"`
+	VaultAlgo   string `json:"vault_algorithm"`
+	VaultPubKey string `json:"vault_public_key"`
 }
 
 type Config struct {

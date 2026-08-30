@@ -57,6 +57,38 @@ func (c *Client) GetTrustedDevice(ctx context.Context) (TrustedDevice, error) {
 	return td, nil
 }
 
+func (c *Client) GetTrustedDesktop(ctx context.Context) (TrustedDesktop, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/v1/desktops/trusted", nil)
+	if err != nil {
+		return TrustedDesktop{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return TrustedDesktop{}, fmt.Errorf("no trusted desktop registered")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return TrustedDesktop{}, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	var td TrustedDesktop
+	if err := json.NewDecoder(resp.Body).Decode(&td); err != nil {
+		return TrustedDesktop{}, err
+	}
+	return td, nil
+}
+
+func (c *Client) RegisterDesktop(ctx context.Context, td TrustedDesktop) error {
+	payload, _ := json.Marshal(td)
+	resp, err := c.do(ctx, http.MethodPost, "/v1/desktops", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusConflict {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
 func (c *Client) CreateRequest(ctx context.Context, r CreateRequest) (Request, error) {
 	payload, err := json.Marshal(r)
 	if err != nil {
@@ -94,6 +126,23 @@ func (c *Client) GetRequest(ctx context.Context, id string) (Request, error) {
 		return Request{}, err
 	}
 	return req, nil
+}
+
+func (c *Client) AttachReleaseRequest(ctx context.Context, id string, req ReleaseRequest) (Request, error) {
+	payload, _ := json.Marshal(req)
+	resp, err := c.do(ctx, http.MethodPost, "/v1/requests/"+id+"/release-request", bytes.NewReader(payload))
+	if err != nil {
+		return Request{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return Request{}, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	var r Request
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return Request{}, err
+	}
+	return r, nil
 }
 
 func (c *Client) ValidatePendingResponse(req Request, want CreateRequest) error {

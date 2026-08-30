@@ -2,21 +2,27 @@ package store
 
 import (
 	"context"
-	"crypto/rand"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/x509"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
 
-	"vault-service/internal/crypto"
 	"vault-service/internal/model"
 )
 
 var ErrNotFound = errors.New("credential not found")
+
+type DB struct {
+	db *sql.DB
+}
 
 func Open(path string) (*DB, error) {
 	db, err := sql.Open("sqlite", path)
@@ -32,10 +38,6 @@ func Open(path string) (*DB, error) {
 	return &DB{db: db}, nil
 }
 
-type DB struct {
-	db *sql.DB
-}
-
 func (d *DB) Close() error {
 	return d.db.Close()
 }
@@ -48,8 +50,9 @@ func applyMigrations(db *sql.DB) error {
 	if version >= 1 {
 		return nil
 	}
-
 	_, err := db.Exec(`
+		DROP TABLE IF EXISTS credentials;
+
 		CREATE TABLE IF NOT EXISTS credentials (
 			id TEXT PRIMARY KEY,
 			origin TEXT NOT NULL UNIQUE,
@@ -57,6 +60,8 @@ func applyMigrations(db *sql.DB) error {
 			cipher_nonce BLOB NOT NULL,
 			wrapped_dek BLOB NOT NULL,
 			wrap_nonce BLOB NOT NULL,
+			wrap_ephemeral_public_key BLOB NOT NULL,
+			pixel_vault_key_id TEXT NOT NULL,
 			crypto_version INTEGER NOT NULL,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
@@ -65,104 +70,82 @@ func applyMigrations(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-
 	_, err = db.Exec("PRAGMA user_version = 1")
 	return err
 }
 
-func (d *DB) CreateCredential(ctx context.Context, in model.CredentialInput, kek []byte) (model.Credential, error) {
+func (d *DB) CreateCredential(ctx context.Context, in model.CredentialPackageInput) (model.CredentialPackage, error) {
+	if in.CryptoVersion != 2 {
+		return model.CredentialPackage{}, fmt.Errorf("unsupported crypto version %d", in.CryptoVersion)
+	}
+	if in.CredentialID == "" {
+		return model.CredentialPackage{}, fmt.Errorf("credential_id is required")
+	}
+	if _, err := hex.DecodeString(in.CredentialID); err != nil {
+		return model.CredentialPackage{}, fmt.Errorf("credential_id must be lowercase hex")
+	}
+	if in.Origin == "" {
+		return model.CredentialPackage{}, fmt.Errorf("origin is required")
+	}
 	origin, err := model.NormalizeOrigin(in.Origin)
 	if err != nil {
-		return model.Credential{}, err
+		return model.CredentialPackage{}, err
 	}
-	if in.Username == "" || in.Password == "" {
-		return model.Credential{}, fmt.Errorf("username and password are required")
+	if in.PixelVaultKeyID == "" {
+		return model.CredentialPackage{}, fmt.Errorf("pixel_vault_key_id is required")
+	}
+	if in.WrapEphemeralPublicKey == "" {
+		return model.CredentialPackage{}, fmt.Errorf("wrap_ephemeral_public_key is required")
+	}
+	if err := validateP256SPKI(in.WrapEphemeralPublicKey); err != nil {
+		return model.CredentialPackage{}, fmt.Errorf("wrap_ephemeral_public_key: %w", err)
+	}
+	if in.Ciphertext == "" || in.CipherNonce == "" || in.WrappedDEK == "" || in.WrapNonce == "" {
+		return model.CredentialPackage{}, fmt.Errorf("ciphertext, cipher_nonce, wrapped_dek and wrap_nonce are required")
+	}
+	if !isRawBase64url(in.Ciphertext) || !isRawBase64url(in.CipherNonce) || !isRawBase64url(in.WrappedDEK) || !isRawBase64url(in.WrapNonce) {
+		return model.CredentialPackage{}, fmt.Errorf("binary fields must be unpadded Base64URL")
 	}
 
-	id, err := generateID()
-	if err != nil {
-		return model.Credential{}, err
-	}
 	now := time.Now().UTC().Format(time.RFC3339)
-
-	payload, err := json.Marshal(map[string]string{
-		"username": in.Username,
-		"password": in.Password,
-	})
-	if err != nil {
-		return model.Credential{}, err
-	}
-
-	rec, err := crypto.Encrypt(payload, id, origin, kek)
-	if err != nil {
-		return model.Credential{}, err
-	}
-
 	_, err = d.db.ExecContext(ctx, `
 		INSERT INTO credentials
-			(id, origin, ciphertext, cipher_nonce, wrapped_dek, wrap_nonce, crypto_version, created_at, updated_at)
+			(id, origin, ciphertext, cipher_nonce, wrapped_dek, wrap_nonce, wrap_ephemeral_public_key, pixel_vault_key_id, crypto_version, created_at, updated_at)
 		VALUES
-			(?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, id, origin, rec.Ciphertext, rec.CipherNonce, rec.WrappedDEK, rec.WrapNonce, rec.CryptoVersion, now, now)
+			(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, in.CredentialID, origin, in.Ciphertext, in.CipherNonce, in.WrappedDEK, in.WrapNonce, in.WrapEphemeralPublicKey, in.PixelVaultKeyID, in.CryptoVersion, now, now)
 	if err != nil {
-		return model.Credential{}, err
+		if isConflict(err) {
+			return model.CredentialPackage{}, fmt.Errorf("credential already exists for origin")
+		}
+		return model.CredentialPackage{}, err
 	}
-
-	return d.getByOrigin(ctx, origin, kek)
+	return d.getByOrigin(ctx, origin)
 }
 
-func (d *DB) GetByOrigin(ctx context.Context, rawOrigin string, kek []byte) (model.Credential, error) {
+func (d *DB) GetPackageByOrigin(ctx context.Context, rawOrigin string) (model.CredentialPackage, error) {
 	origin, err := model.NormalizeOrigin(rawOrigin)
 	if err != nil {
-		return model.Credential{}, err
+		return model.CredentialPackage{}, err
 	}
-	return d.getByOrigin(ctx, origin, kek)
+	return d.getByOrigin(ctx, origin)
 }
 
-func (d *DB) getByOrigin(ctx context.Context, origin string, kek []byte) (model.Credential, error) {
-	var id string
-	var ciphertext, cipherNonce, wrappedDEK, wrapNonce []byte
-	var cryptoVersion int
-	var createdAt, updatedAt string
-
+func (d *DB) getByOrigin(ctx context.Context, origin string) (model.CredentialPackage, error) {
+	var pkg model.CredentialPackage
+	var created, updated string
 	err := d.db.QueryRowContext(ctx, `
-		SELECT id, origin, ciphertext, cipher_nonce, wrapped_dek, wrap_nonce, crypto_version, created_at, updated_at
+		SELECT id, origin, ciphertext, cipher_nonce, wrapped_dek, wrap_nonce, wrap_ephemeral_public_key, pixel_vault_key_id, crypto_version, created_at, updated_at
 		FROM credentials
 		WHERE origin = ?
-	`, origin).Scan(&id, &origin, &ciphertext, &cipherNonce, &wrappedDEK, &wrapNonce, &cryptoVersion, &createdAt, &updatedAt)
-
+	`, origin).Scan(&pkg.CredentialID, &pkg.Origin, &pkg.Ciphertext, &pkg.CipherNonce, &pkg.WrappedDEK, &pkg.WrapNonce, &pkg.WrapEphemeralPublicKey, &pkg.PixelVaultKeyID, &pkg.CryptoVersion, &created, &updated)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return model.Credential{}, ErrNotFound
+			return model.CredentialPackage{}, ErrNotFound
 		}
-		return model.Credential{}, err
+		return model.CredentialPackage{}, err
 	}
-
-	rec := &crypto.Record{
-		Ciphertext:    ciphertext,
-		CipherNonce:   cipherNonce,
-		WrappedDEK:    wrappedDEK,
-		WrapNonce:     wrapNonce,
-		CryptoVersion: cryptoVersion,
-	}
-	plaintext, err := crypto.Decrypt(rec, id, origin, kek)
-	if err != nil {
-		return model.Credential{}, err
-	}
-
-	var payload map[string]string
-	if err := json.Unmarshal(plaintext, &payload); err != nil {
-		return model.Credential{}, err
-	}
-
-	return model.Credential{
-		ID:        id,
-		Origin:    origin,
-		Username:  payload["username"],
-		Password:  payload["password"],
-		CreatedAt: createdAt,
-		UpdatedAt: updatedAt,
-	}, nil
+	return pkg, nil
 }
 
 func (d *DB) Exists(ctx context.Context, rawOrigin string) (bool, error) {
@@ -180,7 +163,7 @@ func (d *DB) Exists(ctx context.Context, rawOrigin string) (bool, error) {
 
 func (d *DB) List(ctx context.Context) ([]model.CredentialMeta, error) {
 	rows, err := d.db.QueryContext(ctx, `
-		SELECT id, origin, created_at, updated_at
+		SELECT id, origin, pixel_vault_key_id, crypto_version, created_at, updated_at
 		FROM credentials
 		ORDER BY origin
 	`)
@@ -188,11 +171,10 @@ func (d *DB) List(ctx context.Context) ([]model.CredentialMeta, error) {
 		return nil, err
 	}
 	defer rows.Close()
-
 	var out []model.CredentialMeta
 	for rows.Next() {
 		var m model.CredentialMeta
-		if err := rows.Scan(&m.ID, &m.Origin, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		if err := rows.Scan(&m.CredentialID, &m.Origin, &m.PixelVaultKeyID, &m.CryptoVersion, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -200,68 +182,42 @@ func (d *DB) List(ctx context.Context) ([]model.CredentialMeta, error) {
 	return out, rows.Err()
 }
 
-func (d *DB) Update(ctx context.Context, id string, in model.CredentialInput, kek []byte) (model.Credential, error) {
-	origin, err := model.NormalizeOrigin(in.Origin)
-	if err != nil {
-		return model.Credential{}, err
-	}
-	if in.Username == "" || in.Password == "" {
-		return model.Credential{}, fmt.Errorf("username and password are required")
-	}
-
-	payload, err := json.Marshal(map[string]string{
-		"username": in.Username,
-		"password": in.Password,
-	})
-	if err != nil {
-		return model.Credential{}, err
-	}
-
-	rec, err := crypto.Encrypt(payload, id, origin, kek)
-	if err != nil {
-		return model.Credential{}, err
-	}
-
-	now := time.Now().UTC().Format(time.RFC3339)
-	res, err := d.db.ExecContext(ctx, `
-		UPDATE credentials
-		SET origin = ?, ciphertext = ?, cipher_nonce = ?,
-		    wrapped_dek = ?, wrap_nonce = ?, crypto_version = ?, updated_at = ?
-		WHERE id = ?
-	`, origin, rec.Ciphertext, rec.CipherNonce, rec.WrappedDEK, rec.WrapNonce, rec.CryptoVersion, now, id)
-	if err != nil {
-		return model.Credential{}, err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return model.Credential{}, err
-	}
-	if n == 0 {
-		return model.Credential{}, ErrNotFound
-	}
-
-	return d.getByOrigin(ctx, origin, kek)
-}
-
 func (d *DB) Delete(ctx context.Context, id string) error {
 	res, err := d.db.ExecContext(ctx, "DELETE FROM credentials WHERE id = ?", id)
 	if err != nil {
 		return err
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
+	n, _ := res.RowsAffected()
 	if n == 0 {
 		return ErrNotFound
 	}
 	return nil
 }
 
-func generateID() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil { //nolint: staticcheck // crypto/rand is the intended package
-		return "", err
+func validateP256SPKI(b64 string) error {
+	der, err := base64.RawURLEncoding.DecodeString(b64)
+	if err != nil {
+		der, err = base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			return fmt.Errorf("not valid base64")
+		}
 	}
-	return hex.EncodeToString(b), nil
+	pubAny, err := x509.ParsePKIXPublicKey(der)
+	if err != nil {
+		return fmt.Errorf("not valid SPKI")
+	}
+	pub, ok := pubAny.(*ecdsa.PublicKey)
+	if !ok || pub.Curve != elliptic.P256() {
+		return fmt.Errorf("not a P-256 ECDSA key")
+	}
+	return nil
+}
+
+func isRawBase64url(s string) bool {
+	_, err := base64.RawURLEncoding.DecodeString(s)
+	return err == nil
+}
+
+func isConflict(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
 }

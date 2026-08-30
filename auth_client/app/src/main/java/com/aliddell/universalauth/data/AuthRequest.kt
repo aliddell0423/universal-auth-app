@@ -14,5 +14,7 @@ data class AuthRequest(
     @SerialName("client_nonce") val clientNonce: String,
     val status: String,
     @SerialName("created_at") val createdAt: String,
-    @SerialName("decided_at") val decidedAt: String? = null
+    @SerialName("decided_at") val decidedAt: String? = null,
+    @SerialName("release_request") val releaseRequest: ReleaseRequest? = null,
+    @SerialName("release_response") val releaseResponse: ReleaseResponse? = null
 )

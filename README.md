@@ -313,8 +313,26 @@ Configure `~/.config/universal-auth/config.json` with `vault_url`, store `~/.con
 - The form is not submitted automatically.
 - `ua-browser-host` does not decrypt the credential until the Pixel signature is verified.
 
+## Secure Release v1
+
+The server no longer holds a decryption key. `VAULT_KEK` has been removed for v2 credentials. The flow is:
+
+- Fedora generates a long-term ECDSA identity key and registers it with the broker.
+- Pixel creates a second P-256 ECDH key in Android Keystore, protected by `BIOMETRIC_STRONG`.
+- New credentials are encrypted on Fedora with a random 32-byte DEK.
+- The DEK is wrapped to Pixel's vault public key using P-256 ECDH + HKDF-SHA256 + AES-256-GCM.
+- The server stores only the ciphertext package and wrapped DEK; it cannot decrypt.
+- To release, Fedora creates a fresh one-time ECDH key, signs the release request with its identity key, and polls the broker.
+- Pixel verifies the desktop signature and request binding, prompts once for a strong biometric, uses its hardware key to unwrap the DEK, and re-encrypts the DEK to Fedora's one-time transfer public key.
+- Fedora derives the transfer key locally, decrypts the DEK, and decrypts the username/password locally.
+
+Firefox autofill still works: `ua-browser-host` fetches the ciphertext package from the server, performs the release protocol, and returns the plaintext.
+
+Existing generic `authctl request` approvals and the Pixel approval signing key continue to work unchanged.
+
 ## Security notes
 
-- Never commit `BROKER_TOKEN`, `VAULT_TOKEN`, `VAULT_KEK`, SSH private keys, passwords, `broker.token`, `vault.token`, or `vault.db` to this repository.
-- The bearer token is development-only and will be replaced by cryptographic device identities later.
-- The vault `VAULT_KEK` is server-held in this milestone; do not store real credentials until Pixel-controlled key release is implemented.
+- Never commit `BROKER_TOKEN`, `VAULT_TOKEN`, SSH private keys, passwords, `broker.token`, `vault.token`, `identity.key`, or `vault.db` to this repository.
+- The bearer token is transport authorization only; it cannot authorize a credential release.
+- Legacy v1 credentials cannot be released through the new flow and will fail closed.
+- Credential plaintext is never available to the server.

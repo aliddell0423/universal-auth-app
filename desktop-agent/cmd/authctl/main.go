@@ -17,6 +17,7 @@ import (
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/auth"
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/broker"
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/config"
+	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/identity"
 )
 
 const (
@@ -35,6 +36,8 @@ func main() {
 	switch os.Args[1] {
 	case "pair":
 		pair(os.Args[2:])
+	case "desktop-register":
+		desktopRegister(os.Args[2:])
 	case "request":
 		request(os.Args[2:])
 	case "inspect":
@@ -46,7 +49,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: authctl <pair|request|inspect> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: authctl <pair|desktop-register|request|inspect> [flags]")
 }
 
 func pair(args []string) {
@@ -83,8 +86,16 @@ func pair(args []string) {
 	}
 
 	cfg := &config.Config{
-		BrokerURL:     *brokerURL,
-		TrustedDevice: config.TrustedDevice(td),
+		BrokerURL: *brokerURL,
+		TrustedDevice: config.TrustedDevice{
+			DeviceID:    td.DeviceID,
+			Name:        td.Name,
+			Algorithm:   td.Algorithm,
+			PublicKey:   td.PublicKey,
+			VaultKeyID:  td.VaultKeyID,
+			VaultAlgo:   td.VaultAlgorithm,
+			VaultPubKey: td.VaultPublicKey,
+		},
 	}
 	if err := cfg.Save(config.DefaultPath()); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -124,7 +135,68 @@ func validateTrustedDevice(td broker.TrustedDevice, expected string) error {
 	if fingerprint != expected {
 		return fmt.Errorf("calculated fingerprint does not match expected device_id")
 	}
+	if td.VaultAlgorithm != "ECDH_P256_HKDF_SHA256" {
+		return fmt.Errorf("unsupported vault algorithm %s", td.VaultAlgorithm)
+	}
+	vaultDER, err := base64.StdEncoding.DecodeString(td.VaultPublicKey)
+	if err != nil {
+		return fmt.Errorf("vault public key is not valid base64")
+	}
+	vaultPubAny, err := x509.ParsePKIXPublicKey(vaultDER)
+	if err != nil {
+		return fmt.Errorf("vault public key is not valid PKIX")
+	}
+	vaultPub, ok := vaultPubAny.(*ecdsa.PublicKey)
+	if !ok {
+		return fmt.Errorf("vault public key is not ECDSA")
+	}
+	if vaultPub.Curve != elliptic.P256() {
+		return fmt.Errorf("vault public key is not P-256")
+	}
+	vaultSum := sha256.Sum256(vaultDER)
+	if hex.EncodeToString(vaultSum[:]) != td.VaultKeyID {
+		return fmt.Errorf("calculated vault fingerprint does not match vault_key_id")
+	}
 	return nil
+}
+
+func desktopRegister(args []string) {
+	fs := flag.NewFlagSet("desktop-register", flag.ExitOnError)
+	name := fs.String("name", "Fedora Desktop", "desktop display name")
+	brokerURL := fs.String("broker", "http://192.168.1.167:8080", "broker base URL")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(exitError)
+	}
+
+	ident, err := identity.LoadOrCreate("")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(exitError)
+	}
+
+	token, err := config.LoadBrokerToken()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(exitError)
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	client := broker.NewClient(*brokerURL, token)
+	if err := client.RegisterDesktop(ctx, broker.TrustedDesktop{
+		DesktopID: ident.DesktopID(),
+		Name:      *name,
+		Algorithm: "ECDSA_P256_SHA256",
+		PublicKey: ident.PublicKey(),
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(exitError)
+	}
+
+	fmt.Printf("Desktop identity: %s\n", *name)
+	fmt.Printf("Fingerprint:\n%s\n", ident.DesktopID())
 }
 
 func request(args []string) {

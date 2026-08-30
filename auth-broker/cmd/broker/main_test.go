@@ -77,7 +77,16 @@ func registerDevice(t *testing.T, srv *httptest.Server, pub *ecdsa.PublicKey) {
 		t.Fatalf("marshal: %v", err)
 	}
 	devID := deviceIDFromKey(t, pub)
-	payload := fmt.Sprintf(`{"device_id":"%s","name":"Pixel 10","algorithm":"ECDSA_P256_SHA256","public_key":"%s"}`, devID, base64.StdEncoding.EncodeToString(der))
+	vaultPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate vault key: %v", err)
+	}
+	vaultDER, err := x509.MarshalPKIXPublicKey(&vaultPriv.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal vault key: %v", err)
+	}
+	vaultID := deviceIDFromKey(t, &vaultPriv.PublicKey)
+	payload := fmt.Sprintf(`{"device_id":"%s","name":"Pixel 10","algorithm":"ECDSA_P256_SHA256","public_key":"%s","vault_key_id":"%s","vault_algorithm":"ECDH_P256_HKDF_SHA256","vault_public_key":"%s"}`, devID, base64.StdEncoding.EncodeToString(der), vaultID, base64.StdEncoding.EncodeToString(vaultDER))
 	resp := doRequest(t, srv, http.MethodPost, "/v1/devices/register", "Bearer "+testToken, strings.NewReader(payload))
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -429,7 +438,10 @@ func TestDeviceRegistration(t *testing.T) {
 		priv2 := generateTestKey(t)
 		registerDevice(t, srv, &priv1.PublicKey)
 		der, _ := x509.MarshalPKIXPublicKey(&priv2.PublicKey)
-		payload := fmt.Sprintf(`{"device_id":"%s","name":"Pixel 10","algorithm":"ECDSA_P256_SHA256","public_key":"%s"}`, deviceIDFromKey(t, &priv2.PublicKey), base64.StdEncoding.EncodeToString(der))
+		vaultPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		vaultDER, _ := x509.MarshalPKIXPublicKey(&vaultPriv.PublicKey)
+		vaultID := deviceIDFromKey(t, &vaultPriv.PublicKey)
+		payload := fmt.Sprintf(`{"device_id":"%s","name":"Pixel 10","algorithm":"ECDSA_P256_SHA256","public_key":"%s","vault_key_id":"%s","vault_algorithm":"ECDH_P256_HKDF_SHA256","vault_public_key":"%s"}`, deviceIDFromKey(t, &priv2.PublicKey), base64.StdEncoding.EncodeToString(der), vaultID, base64.StdEncoding.EncodeToString(vaultDER))
 		resp := doRequest(t, srv, http.MethodPost, "/v1/devices/register", "Bearer "+testToken, strings.NewReader(payload))
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusConflict {

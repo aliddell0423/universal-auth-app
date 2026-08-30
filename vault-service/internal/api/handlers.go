@@ -21,11 +21,10 @@ const (
 type Server struct {
 	store *store.DB
 	token string
-	kek   []byte
 }
 
-func NewServer(db *store.DB, token string, kek []byte) *Server {
-	return &Server{store: db, token: token, kek: kek}
+func NewServer(db *store.DB, token string) *Server {
+	return &Server{store: db, token: token}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -33,7 +32,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/v1/credentials", s.handleCredentials)
 	mux.HandleFunc("/v1/credentials/exists", s.handleExists)
-	mux.HandleFunc("/v1/credentials/by-origin", s.handleByOrigin)
+	mux.HandleFunc("/v1/credentials/package", s.handlePackage)
 	mux.HandleFunc("/v1/credentials/", s.handleCredentialByID)
 	return authMiddleware(mux, s.token)
 }
@@ -67,26 +66,24 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
-	var in model.CredentialInput
+	var in model.CredentialPackageInput
 	if err := decodeJSON(w, r, &in); err != nil {
 		writeError(w, http.StatusBadRequest, "malformed or invalid JSON")
 		return
 	}
-	if in.Origin == "" || in.Username == "" || in.Password == "" {
-		writeError(w, http.StatusBadRequest, "missing required fields")
-		return
-	}
-
-	c, err := s.store.CreateCredential(r.Context(), in, s.kek)
+	pkg, err := s.store.CreateCredential(r.Context(), in)
 	if err != nil {
-		if isConflict(err) {
+		msg := err.Error()
+		if strings.Contains(msg, "already exists") {
 			writeError(w, http.StatusConflict, "credential already exists for origin")
-			return
+		} else if strings.Contains(msg, "required") || strings.Contains(msg, "unsupported") || strings.Contains(msg, "must") || strings.Contains(msg, "wrap_ephemeral") {
+			writeError(w, http.StatusBadRequest, msg)
+		} else {
+			writeError(w, http.StatusInternalServerError, "internal error")
 		}
-		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, c)
+	writeJSON(w, http.StatusCreated, pkg)
 }
 
 func (s *Server) handleExists(w http.ResponseWriter, r *http.Request) {
@@ -101,18 +98,13 @@ func (s *Server) handleExists(w http.ResponseWriter, r *http.Request) {
 	}
 	exists, err := s.store.Exists(r.Context(), origin)
 	if err != nil {
-		// Validation errors surface as 400.
-		if isBadRequest(err) {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"exists": exists})
 }
 
-func (s *Server) handleByOrigin(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -122,20 +114,16 @@ func (s *Server) handleByOrigin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "origin query parameter is required")
 		return
 	}
-	c, err := s.store.GetByOrigin(r.Context(), origin, s.kek)
+	pkg, err := s.store.GetPackageByOrigin(r.Context(), origin)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "credential not found")
 			return
 		}
-		if isBadRequest(err) {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, c)
+	writeJSON(w, http.StatusOK, pkg)
 }
 
 func (s *Server) handleCredentialByID(w http.ResponseWriter, r *http.Request) {
@@ -144,49 +132,10 @@ func (s *Server) handleCredentialByID(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "credential not found")
 		return
 	}
-
-	switch r.Method {
-	case http.MethodPut:
-		s.handleUpdate(w, r, id)
-	case http.MethodDelete:
-		s.handleDelete(w, r, id)
-	default:
+	if r.Method != http.MethodDelete {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-	}
-}
-
-func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, id string) {
-	var in model.CredentialInput
-	if err := decodeJSON(w, r, &in); err != nil {
-		writeError(w, http.StatusBadRequest, "malformed or invalid JSON")
 		return
 	}
-	if in.Origin == "" || in.Username == "" || in.Password == "" {
-		writeError(w, http.StatusBadRequest, "missing required fields")
-		return
-	}
-
-	c, err := s.store.Update(r.Context(), id, in, s.kek)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "credential not found")
-			return
-		}
-		if isConflict(err) {
-			writeError(w, http.StatusConflict, "credential already exists for origin")
-			return
-		}
-		if isBadRequest(err) {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	writeJSON(w, http.StatusOK, c)
-}
-
-func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request, id string) {
 	if err := s.store.Delete(r.Context(), id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "credential not found")
@@ -242,21 +191,4 @@ func authMiddleware(next http.Handler, token string) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-func isConflict(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), "UNIQUE constraint failed") || strings.Contains(err.Error(), "credential already exists")
-}
-
-func isBadRequest(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), "not allowed") ||
-		strings.Contains(err.Error(), "unsupported scheme") ||
-		strings.Contains(err.Error(), "missing host") ||
-		strings.Contains(err.Error(), "invalid origin")
 }

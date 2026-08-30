@@ -33,6 +33,7 @@ import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import com.aliddell.universalauth.crypto.ApprovalKeyManager
 import com.aliddell.universalauth.crypto.KeyManagerException
+import com.aliddell.universalauth.crypto.VaultKeyManager
 import com.aliddell.universalauth.crypto.buildSigningPayload
 import com.aliddell.universalauth.data.AuthRequest
 import com.aliddell.universalauth.data.DefaultAuthRepository
@@ -46,6 +47,7 @@ class MainActivity : FragmentActivity() {
     }
 
     private val keyManager = ApprovalKeyManager()
+    private val vaultKeyManager = VaultKeyManager()
     private var pendingBiometricRequest: AuthRequest? = null
     private lateinit var biometricPrompt: BiometricPrompt
 
@@ -105,11 +107,20 @@ class MainActivity : FragmentActivity() {
 
         try {
             keyManager.ensureKey()
+            val (vaultKeyId, vaultPublic) = if (vaultKeyManager.isSupported()) {
+                val pair = vaultKeyManager.ensureKey()
+                vaultKeyManager.keyId() to vaultKeyManager.publicKeyEncoded()
+            } else {
+                "" to ""
+            }
             authViewModel.registerDevice(
                 keyManager.deviceId(),
                 "Pixel 10",
                 "ECDSA_P256_SHA256",
-                keyManager.publicKeyEncoded()
+                keyManager.publicKeyEncoded(),
+                vaultKeyId,
+                if (vaultKeyManager.isSupported()) "ECDH_P256_HKDF_SHA256" else "",
+                vaultPublic
             )
         } catch (e: KeyManagerException) {
             Toast.makeText(

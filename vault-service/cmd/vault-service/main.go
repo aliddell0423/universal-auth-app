@@ -25,7 +25,7 @@ func main() {
 	}
 	defer db.Close()
 
-	srv := api.NewServer(db, cfg.Token, cfg.KEK)
+	srv := api.NewServer(db, cfg.Token)
 	fmt.Printf("vault-service listening on %s\n", cfg.Addr)
 
 	server := &http.Server{

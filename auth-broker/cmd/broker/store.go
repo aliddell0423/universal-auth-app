@@ -18,6 +18,7 @@ const (
 	StatusPending  RequestStatus = "pending"
 	StatusApproved RequestStatus = "approved"
 	StatusDenied   RequestStatus = "denied"
+	StatusReleased RequestStatus = "released"
 )
 
 type ApprovalProof struct {
@@ -26,18 +27,40 @@ type ApprovalProof struct {
 	Signature string `json:"signature"`
 }
 
+type ReleaseRequest struct {
+	Protocol               string `json:"protocol"`
+	DesktopID              string `json:"desktop_id"`
+	DesktopAlgorithm       string `json:"desktop_algorithm"`
+	DesktopEphemeralPublic string `json:"desktop_ephemeral_public_key"`
+	CredentialPackage      string `json:"credential_package"`
+	PackageHash            string `json:"package_hash"`
+	DesktopSignature       string `json:"desktop_signature"`
+}
+
+type ReleaseResponse struct {
+	Protocol             string `json:"protocol"`
+	CredentialID         string `json:"credential_id"`
+	PackageHash          string `json:"package_hash"`
+	PixelVaultKeyID      string `json:"pixel_vault_key_id"`
+	PixelEphemeralPublic string `json:"pixel_ephemeral_public_key"`
+	TransferNonce        string `json:"transfer_nonce"`
+	EncryptedDEK         string `json:"encrypted_dek"`
+}
+
 type Request struct {
-	ID            string         `json:"id"`
-	Source        string         `json:"source"`
-	Kind          string         `json:"kind"`
-	Resource      string         `json:"resource"`
-	Message       string         `json:"message"`
-	Challenge     string         `json:"challenge"`
-	ClientNonce   string         `json:"client_nonce"`
-	Status        RequestStatus  `json:"status"`
-	CreatedAt     time.Time      `json:"created_at"`
-	DecidedAt     *time.Time     `json:"decided_at,omitempty"`
-	ApprovalProof *ApprovalProof `json:"approval_proof,omitempty"`
+	ID              string           `json:"id"`
+	Source          string           `json:"source"`
+	Kind            string           `json:"kind"`
+	Resource        string           `json:"resource"`
+	Message         string           `json:"message"`
+	Challenge       string           `json:"challenge"`
+	ClientNonce     string           `json:"client_nonce"`
+	Status          RequestStatus    `json:"status"`
+	CreatedAt       time.Time        `json:"created_at"`
+	DecidedAt       *time.Time       `json:"decided_at,omitempty"`
+	ApprovalProof   *ApprovalProof   `json:"approval_proof,omitempty"`
+	ReleaseRequest  *ReleaseRequest  `json:"release_request,omitempty"`
+	ReleaseResponse *ReleaseResponse `json:"release_response,omitempty"`
 }
 
 type CreateRequest struct {
@@ -55,27 +78,41 @@ type Decision struct {
 }
 
 type Device struct {
-	DeviceID  string
+	DeviceID       string
+	Name           string
+	Algorithm      string
+	PublicKey      *ecdsa.PublicKey
+	VaultKeyID     string
+	VaultAlgo      string
+	VaultPublicKey *ecdsa.PublicKey
+}
+
+type Desktop struct {
+	DesktopID string
 	Name      string
 	Algorithm string
 	PublicKey *ecdsa.PublicKey
 }
 
 var (
-	ErrRequestNotFound       = errors.New("request not found")
-	ErrInvalidDecision       = errors.New("invalid decision value")
-	ErrRequestAlreadyDecided = errors.New("request already decided")
-	ErrDeviceAlreadyTrusted  = errors.New("a different device is already trusted")
-	ErrDeviceNotFound        = errors.New("device not registered")
-	ErrDeviceMismatch        = errors.New("device id does not match the trusted device")
-	ErrInvalidSignature      = errors.New("invalid signature")
-	ErrMissingClientNonce    = errors.New("client_nonce is required")
+	ErrRequestNotFound         = errors.New("request not found")
+	ErrInvalidDecision         = errors.New("invalid decision value")
+	ErrRequestAlreadyDecided   = errors.New("request already decided")
+	ErrDeviceAlreadyTrusted    = errors.New("a different device is already trusted")
+	ErrDeviceNotFound          = errors.New("device not registered")
+	ErrDeviceMismatch          = errors.New("device id does not match the trusted device")
+	ErrInvalidSignature        = errors.New("invalid signature")
+	ErrMissingClientNonce      = errors.New("client_nonce is required")
+	ErrReleaseAlreadyAttached  = errors.New("release request already attached")
+	ErrResponseAlreadyAttached = errors.New("release response already attached")
+	ErrInvalidReleaseState     = errors.New("request is not in a valid state for release")
 )
 
 type Store struct {
-	mu     sync.RWMutex
-	reqs   map[string]*Request
-	device *Device
+	mu      sync.RWMutex
+	reqs    map[string]*Request
+	device  *Device
+	desktop *Desktop
 }
 
 func NewStore() *Store {
@@ -159,6 +196,29 @@ func (s *Store) TrustedDevice() *Device {
 	return &cp
 }
 
+func (s *Store) RegisterDesktop(d *Desktop) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.desktop != nil {
+		if desktopID(s.desktop.PublicKey) != desktopID(d.PublicKey) {
+			return ErrDeviceAlreadyTrusted
+		}
+		return nil
+	}
+	s.desktop = d
+	return nil
+}
+
+func (s *Store) TrustedDesktop() *Desktop {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.desktop == nil {
+		return nil
+	}
+	cp := *s.desktop
+	return &cp
+}
+
 func (s *Store) Decide(id, decision string, proof *ApprovalProof) (*Request, error) {
 	d := RequestStatus(decision)
 	if d != StatusApproved && d != StatusDenied {
@@ -176,6 +236,9 @@ func (s *Store) Decide(id, decision string, proof *ApprovalProof) (*Request, err
 	}
 
 	if d == StatusApproved {
+		if r.Kind == "credential_release" {
+			return nil, ErrInvalidDecision
+		}
 		if proof == nil {
 			return nil, ErrInvalidSignature
 		}
@@ -207,6 +270,45 @@ func (s *Store) Decide(id, decision string, proof *ApprovalProof) (*Request, err
 	return &cp, nil
 }
 
+func (s *Store) AttachReleaseRequest(id string, req ReleaseRequest) (*Request, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.reqs[id]
+	if !ok {
+		return nil, ErrRequestNotFound
+	}
+	if r.Status != StatusPending {
+		return nil, ErrInvalidReleaseState
+	}
+	if r.ReleaseRequest != nil {
+		return nil, ErrReleaseAlreadyAttached
+	}
+	r.ReleaseRequest = &req
+	cp := *r
+	return &cp, nil
+}
+
+func (s *Store) AttachReleaseResponse(id string, resp ReleaseResponse) (*Request, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.reqs[id]
+	if !ok {
+		return nil, ErrRequestNotFound
+	}
+	if r.Status != StatusPending {
+		return nil, ErrInvalidReleaseState
+	}
+	if r.ReleaseResponse != nil {
+		return nil, ErrResponseAlreadyAttached
+	}
+	r.ReleaseResponse = &resp
+	r.Status = StatusReleased
+	now := time.Now().UTC()
+	r.DecidedAt = &now
+	cp := *r
+	return &cp, nil
+}
+
 func generateID() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -230,4 +332,8 @@ func deviceID(pub *ecdsa.PublicKey) string {
 	}
 	sum := sha256.Sum256(der)
 	return hex.EncodeToString(sum[:])
+}
+
+func desktopID(pub *ecdsa.PublicKey) string {
+	return deviceID(pub)
 }

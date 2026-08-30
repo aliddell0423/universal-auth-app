@@ -5,6 +5,8 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.aliddell.universalauth.data.AuthRepository
 import com.aliddell.universalauth.data.AuthRequest
+import com.aliddell.universalauth.data.DeviceRegistrationWithVault
+import com.aliddell.universalauth.data.ReleaseResponse
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -39,10 +41,22 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
         }
     }
 
-    fun registerDevice(deviceId: String, name: String, algorithm: String, publicKey: String) {
+    fun registerDevice(
+        deviceId: String,
+        name: String,
+        algorithm: String,
+        publicKey: String,
+        vaultKeyId: String,
+        vaultAlgorithm: String,
+        vaultPublicKey: String
+    ) {
         _uiState.value = _uiState.value.copy(loading = true, error = null)
         viewModelScope.launch {
-            val result = repository.registerDevice(deviceId, name, algorithm, publicKey)
+            val registration = DeviceRegistrationWithVault(
+                deviceId, name, algorithm, publicKey,
+                vaultKeyId, vaultAlgorithm, vaultPublicKey
+            )
+            val result = repository.registerDevice(registration)
             if (result.isSuccess) {
                 _uiState.value = _uiState.value.copy(
                     loading = false,
@@ -84,6 +98,21 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(loading = true, error = null)
             val result = repository.submitSignedApproval(id, deviceId, signature)
+            if (result.isSuccess) {
+                refresh()
+            } else {
+                _uiState.value = _uiState.value.copy(
+                    loading = false,
+                    error = result.exceptionOrNull()?.message
+                )
+            }
+        }
+    }
+
+    fun submitReleaseResponse(id: String, response: ReleaseResponse) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(loading = true, error = null)
+            val result = repository.submitReleaseResponse(id, response)
             if (result.isSuccess) {
                 refresh()
             } else {

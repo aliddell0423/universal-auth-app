@@ -69,10 +69,9 @@ ssh "${SSH_OPTS[@]}" "$TARGET" 'mkdir -p -m 700 ~/.local/share/universal-auth/va
 echo "==> Checking remote vault environment file"
 if ! ssh "${SSH_OPTS[@]}" "$TARGET" 'test -f ~/.config/universal-auth-vault/vault.env'; then
     echo "ERROR: ~/.config/universal-auth-vault/vault.env does not exist on $TARGET" >&2
-    echo "Create it on the VM with mode 600 and non-empty VAULT_TOKEN and VAULT_KEK values." >&2
-    echo "Use: openssl rand -hex 32 > /tmp/token; openssl rand -base64 32 > /tmp/kek" >&2
-    echo "Then: printf 'VAULT_TOKEN=%s\\nVAULT_KEK=%s\\n' $(cat /tmp/token) $(cat /tmp/kek) > ~/.config/universal-auth-vault/vault.env" >&2
-    echo "Do not regenerate an existing KEK; that would make prior encrypted credentials unreadable." >&2
+    echo "Create it on the VM with mode 600 and a non-empty VAULT_TOKEN value." >&2
+    echo "Use: openssl rand -hex 32 > /tmp/token" >&2
+    echo "Then: printf 'VAULT_TOKEN=%s\\n' $(cat /tmp/token) > ~/.config/universal-auth-vault/vault.env" >&2
     exit 1
 fi
 
@@ -86,10 +85,6 @@ fi
 echo "==> Verifying remote vault secrets"
 if ! ssh "${SSH_OPTS[@]}" "$TARGET" 'grep -qE "^VAULT_TOKEN=.+$" ~/.config/universal-auth-vault/vault.env'; then
     echo "ERROR: VAULT_TOKEN must be non-empty" >&2
-    exit 1
-fi
-if ! ssh "${SSH_OPTS[@]}" "$TARGET" 'grep -qE "^VAULT_KEK=.+$" ~/.config/universal-auth-vault/vault.env'; then
-    echo "ERROR: VAULT_KEK must be non-empty" >&2
     exit 1
 fi
 

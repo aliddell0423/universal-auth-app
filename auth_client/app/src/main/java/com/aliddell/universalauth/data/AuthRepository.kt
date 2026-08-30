@@ -14,14 +14,27 @@ import okhttp3.RequestBody.Companion.toRequestBody
 interface AuthRepository {
     suspend fun checkHealth(): Result<String>
     suspend fun getPendingRequests(): Result<List<AuthRequest>>
-    suspend fun registerDevice(deviceId: String, name: String, algorithm: String, publicKey: String): Result<Unit>
+    suspend fun registerDevice(registration: DeviceRegistrationWithVault): Result<Unit>
+    suspend fun getTrustedDesktop(): Result<TrustedDesktop>
     suspend fun submitSignedApproval(id: String, deviceId: String, signature: String): Result<AuthRequest>
+    suspend fun submitReleaseResponse(id: String, response: ReleaseResponse): Result<AuthRequest>
     suspend fun submitDenial(id: String): Result<AuthRequest>
 }
 
 @kotlinx.serialization.Serializable
-private data class DeviceRegistration(
+data class DeviceRegistrationWithVault(
     val device_id: String,
+    val name: String,
+    val algorithm: String,
+    val public_key: String,
+    val vault_key_id: String,
+    val vault_algorithm: String,
+    val vault_public_key: String
+)
+
+@kotlinx.serialization.Serializable
+data class TrustedDesktop(
+    val desktop_id: String,
     val name: String,
     val algorithm: String,
     val public_key: String
@@ -67,14 +80,9 @@ class DefaultAuthRepository(
     }
 
     override suspend fun registerDevice(
-        deviceId: String,
-        name: String,
-        algorithm: String,
-        publicKey: String
+        registration: DeviceRegistrationWithVault
     ): Result<Unit> = withContext(Dispatchers.IO) {
-        val payload = json.encodeToString(
-            DeviceRegistration(deviceId, name, algorithm, publicKey)
-        )
+        val payload = json.encodeToString(registration)
         val body = payload.toRequestBody(mediaType)
         val request = Request.Builder()
             .url("$baseUrl/v1/devices/register")
@@ -89,6 +97,20 @@ class DefaultAuthRepository(
         }
     }
 
+    override suspend fun getTrustedDesktop(): Result<TrustedDesktop> = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("$baseUrl/v1/desktops/trusted")
+            .header("Authorization", "Bearer $token")
+            .build()
+        runCatching {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
+                val body = response.body.string()
+                json.decodeFromString<TrustedDesktop>(body)
+            }
+        }
+    }
+
     override suspend fun submitSignedApproval(
         id: String,
         deviceId: String,
@@ -98,6 +120,27 @@ class DefaultAuthRepository(
         val body = payload.toRequestBody(mediaType)
         val request = Request.Builder()
             .url("$baseUrl/v1/requests/$id/decision")
+            .post(body)
+            .header("Authorization", "Bearer $token")
+            .header("Content-Type", "application/json")
+            .build()
+        runCatching {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
+                val responseBody = response.body.string()
+                json.decodeFromString<AuthRequest>(responseBody)
+            }
+        }
+    }
+
+    override suspend fun submitReleaseResponse(
+        id: String,
+        response: ReleaseResponse
+    ): Result<AuthRequest> = withContext(Dispatchers.IO) {
+        val payload = json.encodeToString(response)
+        val body = payload.toRequestBody(mediaType)
+        val request = Request.Builder()
+            .url("$baseUrl/v1/requests/$id/release-response")
             .post(body)
             .header("Authorization", "Bearer $token")
             .header("Content-Type", "application/json")

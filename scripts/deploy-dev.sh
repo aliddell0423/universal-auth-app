@@ -82,10 +82,6 @@ if ! ssh "${SSH_OPTS[@]}" "$TARGET" 'grep -qE "^VAULT_TOKEN=.+$" ~/.config/unive
     echo "ERROR: VAULT_TOKEN must be non-empty in ~/.config/universal-auth-vault/vault.env" >&2
     exit 1
 fi
-if ! ssh "${SSH_OPTS[@]}" "$TARGET" 'grep -qE "^VAULT_KEK=.+$" ~/.config/universal-auth-vault/vault.env'; then
-    echo "ERROR: VAULT_KEK must be non-empty in ~/.config/universal-auth-vault/vault.env" >&2
-    exit 1
-fi
 
 echo "==> Transferring images to $TARGET"
 podman save auth-broker:dev | ssh "${SSH_OPTS[@]}" "$TARGET" podman load
