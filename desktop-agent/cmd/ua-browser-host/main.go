@@ -48,6 +48,21 @@ func handle(req inMessage) outMessage {
 		return outMessage{Status: "error"}
 	}
 
+	// Open the store but only check for key presence before approval.
+	// The actual username/password is loaded only after the Pixel signature
+	// has been verified locally.
+	store, err := credentials.Open(credentials.DefaultPath())
+	if err != nil {
+		if err == credentials.ErrNotFound {
+			return outMessage{Status: "not_found"}
+		}
+		fmt.Fprintf(os.Stderr, "open credentials: %v\n", err)
+		return outMessage{Status: "error"}
+	}
+	if !store.Has(req.Origin) {
+		return outMessage{Status: "not_found"}
+	}
+
 	cfg, err := config.Load("")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
@@ -57,15 +72,6 @@ func handle(req inMessage) outMessage {
 	token, err := config.LoadBrokerToken()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load broker token: %v\n", err)
-		return outMessage{Status: "error"}
-	}
-
-	cred, err := credentials.Lookup(req.Origin)
-	if err != nil {
-		if err == credentials.ErrNotFound {
-			return outMessage{Status: "not_found"}
-		}
-		fmt.Fprintf(os.Stderr, "credential lookup: %v\n", err)
 		return outMessage{Status: "error"}
 	}
 
@@ -96,6 +102,11 @@ func handle(req inMessage) outMessage {
 
 	switch res.Status {
 	case auth.StatusApproved:
+		cred, err := store.Get(req.Origin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "read credential after approval: %v\n", err)
+			return outMessage{Status: "error"}
+		}
 		return outMessage{Status: "approved", Username: cred.Username, Password: cred.Password}
 	case auth.StatusDenied:
 		return outMessage{Status: "denied"}

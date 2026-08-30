@@ -19,7 +19,20 @@ function findUsernameInput(passwordInput) {
 }
 
 function fillValue(input, value) {
-  input.value = value || '';
+  const v = value || '';
+
+  // Use the native HTMLInputElement value setter so controlled
+  // components (React, etc.) observe the change as if the user typed it.
+  const descriptor = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    'value'
+  );
+  if (descriptor && descriptor.set) {
+    descriptor.set.call(input, v);
+  } else {
+    input.value = v;
+  }
+
   input.dispatchEvent(new Event('input', { bubbles: true }));
   input.dispatchEvent(new Event('change', { bubbles: true }));
 }

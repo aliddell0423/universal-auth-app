@@ -32,6 +32,17 @@ chmod 600 ~/.config/universal-auth/broker.token
 
 The `BROKER_TOKEN` environment variable still takes priority.
 
+## Quick start
+
+The convenience script builds the native host, creates the fake development credential file, and starts the test server:
+
+```bash
+export BROKER_TOKEN='...'
+./browser-extension/scripts/run-dev-test.sh
+```
+
+It does **not** overwrite an existing `dev-credentials.json` or `broker.token`.
+
 ## Install the native host
 
 From the repository root:

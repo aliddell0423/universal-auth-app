@@ -15,37 +15,63 @@ type Credential struct {
 	Password string `json:"password"`
 }
 
-func Lookup(origin string) (Credential, error) {
+func DefaultPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return Credential{}, err
+		return ""
 	}
-	p := filepath.Join(home, ".config", "universal-auth", "dev-credentials.json")
+	return filepath.Join(home, ".config", "universal-auth", "dev-credentials.json")
+}
 
-	data, err := os.ReadFile(p)
+type Store struct {
+	raw map[string]json.RawMessage
+}
+
+// Open reads the credential store and checks that it is not group- or world-readable.
+// It only loads the origin keys and raw entries, not the decrypted values.
+func Open(path string) (*Store, error) {
+	if path == "" {
+		path = DefaultPath()
+	}
+
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return Credential{}, ErrNotFound
+			return nil, ErrNotFound
 		}
-		return Credential{}, err
+		return nil, err
 	}
 
-	info, err := os.Stat(p)
+	info, err := os.Stat(path)
 	if err == nil {
 		mode := info.Mode().Perm()
 		if mode&0077 != 0 {
-			return Credential{}, fmt.Errorf("dev credentials file %s has overly permissive mode %o", p, mode)
+			return nil, fmt.Errorf("dev credentials file %s has overly permissive mode %o", path, mode)
 		}
 	}
 
-	var store map[string]Credential
-	if err := json.Unmarshal(data, &store); err != nil {
-		return Credential{}, err
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
 	}
 
-	c, ok := store[origin]
+	return &Store{raw: raw}, nil
+}
+
+func (s *Store) Has(origin string) bool {
+	_, ok := s.raw[origin]
+	return ok
+}
+
+func (s *Store) Get(origin string) (Credential, error) {
+	v, ok := s.raw[origin]
 	if !ok {
 		return Credential{}, ErrNotFound
+	}
+
+	var c Credential
+	if err := json.Unmarshal(v, &c); err != nil {
+		return Credential{}, err
 	}
 	return c, nil
 }
