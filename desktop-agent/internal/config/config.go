@@ -16,6 +16,7 @@ type TrustedDevice struct {
 
 type Config struct {
 	BrokerURL     string        `json:"broker_url"`
+	VaultURL      string        `json:"vault_url"`
 	TrustedDevice TrustedDevice `json:"trusted_device"`
 }
 

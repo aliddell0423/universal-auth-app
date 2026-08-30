@@ -17,4 +17,9 @@ if [ -n "$AUTH_DEV_SSH_KEY" ]; then
 fi
 TARGET="$AUTH_DEV_USER@$AUTH_DEV_HOST"
 
-exec ssh -t "${SSH_OPTS[@]}" "$TARGET" 'podman logs --tail 100 -f auth-broker'
+echo "==> Recent auth-broker logs"
+ssh "${SSH_OPTS[@]}" "$TARGET" 'podman logs --tail 100 auth-broker'
+
+echo
+echo "==> Recent vault-service logs"
+ssh "${SSH_OPTS[@]}" "$TARGET" 'podman logs --tail 100 vault-service'

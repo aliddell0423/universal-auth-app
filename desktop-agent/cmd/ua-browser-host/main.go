@@ -9,8 +9,8 @@ import (
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/auth"
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/broker"
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/config"
-	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/credentials"
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/nm"
+	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/vault"
 )
 
 const (
@@ -48,37 +48,45 @@ func handle(req inMessage) outMessage {
 		return outMessage{Status: "error"}
 	}
 
-	// Open the store but only check for key presence before approval.
-	// The actual username/password is loaded only after the Pixel signature
-	// has been verified locally.
-	store, err := credentials.Open(credentials.DefaultPath())
-	if err != nil {
-		if err == credentials.ErrNotFound {
-			return outMessage{Status: "not_found"}
-		}
-		fmt.Fprintf(os.Stderr, "open credentials: %v\n", err)
-		return outMessage{Status: "error"}
-	}
-	if !store.Has(req.Origin) {
-		return outMessage{Status: "not_found"}
-	}
-
 	cfg, err := config.Load("")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
 		return outMessage{Status: "error"}
 	}
+	if cfg.VaultURL == "" {
+		fmt.Fprintln(os.Stderr, "vault_url is not configured")
+		return outMessage{Status: "error"}
+	}
 
-	token, err := config.LoadBrokerToken()
+	vaultToken, err := config.LoadVaultToken()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load vault token: %v\n", err)
+		return outMessage{Status: "error"}
+	}
+	vaultClient := vault.NewClient(cfg.VaultURL, vaultToken)
+
+	// Metadata-only check before asking the Pixel for approval.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	exists, err := vaultClient.CredentialExists(ctx, req.Origin)
+	cancel()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "vault exists check: %v\n", err)
+		return outMessage{Status: "error"}
+	}
+	if !exists {
+		return outMessage{Status: "not_found"}
+	}
+
+	brokerToken, err := config.LoadBrokerToken()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load broker token: %v\n", err)
 		return outMessage{Status: "error"}
 	}
 
-	client := broker.NewClient(cfg.BrokerURL, token)
-	svc := &auth.Service{Client: client, Config: cfg}
+	brokerClient := broker.NewClient(cfg.BrokerURL, brokerToken)
+	svc := &auth.Service{Client: brokerClient, Config: cfg}
 
-	ctx, cancel := context.WithTimeout(context.Background(), defaultAuthTimeout)
+	ctx, cancel = context.WithTimeout(context.Background(), defaultAuthTimeout)
 	defer cancel()
 
 	res, err := svc.Authenticate(ctx, auth.Request{
@@ -102,9 +110,9 @@ func handle(req inMessage) outMessage {
 
 	switch res.Status {
 	case auth.StatusApproved:
-		cred, err := store.Get(req.Origin)
+		cred, err := getSecretAfterApproval(cfg.VaultURL, vaultToken, req.Origin)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "read credential after approval: %v\n", err)
+			fmt.Fprintf(os.Stderr, "vault retrieval after approval: %v\n", err)
 			return outMessage{Status: "error"}
 		}
 		return outMessage{Status: "approved", Username: cred.Username, Password: cred.Password}
@@ -115,4 +123,11 @@ func handle(req inMessage) outMessage {
 	default:
 		return outMessage{Status: "error"}
 	}
+}
+
+func getSecretAfterApproval(vaultURL, token, origin string) (vault.Credential, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c := vault.NewClient(vaultURL, token)
+	return c.GetCredential(ctx, origin)
 }

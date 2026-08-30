@@ -1,0 +1,16 @@
+# syntax=docker/dockerfile:1
+FROM golang:1.26 AS builder
+
+WORKDIR /build
+COPY go.mod ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags="-w -s" -o /build/vault-service ./cmd/vault-service
+
+FROM scratch
+COPY --from=builder --chown=0:0 /build/vault-service /vault-service
+USER 0:0
+WORKDIR /data
+EXPOSE 8081
+ENTRYPOINT ["/vault-service"]

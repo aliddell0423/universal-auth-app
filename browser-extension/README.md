@@ -2,23 +2,15 @@
 
 This prototype proves the browser-to-Pixel-to-browser credential flow. It uses a development credential file and does not include an encrypted vault, background daemon, or mobile transport.
 
-## Development credential file
+## Vault setup
 
-Create `~/.config/universal-auth/dev-credentials.json` (mode `0600`) with fake credentials only:
-
-```json
-{
-  "http://127.0.0.1:8765": {
-    "username": "demo@universalauth.test",
-    "password": "development-password-only"
-  }
-}
-```
+The browser host now uses `vault-service` for credential storage. Make sure the vault is deployed and a fake credential has been added for the test origin:
 
 ```bash
-mkdir -p ~/.config/universal-auth
-chmod 700 ~/.config/universal-auth
-chmod 600 ~/.config/universal-auth/dev-credentials.json
+curl -X POST http://192.168.1.167:8081/v1/credentials \
+  -H "Authorization: Bearer $VAULT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"origin":"http://127.0.0.1:8765","username":"demo@universalauth.test","password":"development-password-only"}'
 ```
 
 ## Broker token
@@ -34,14 +26,15 @@ The `BROKER_TOKEN` environment variable still takes priority.
 
 ## Quick start
 
-The convenience script builds the native host, creates the fake development credential file, and starts the test server:
+The convenience script builds the native host, creates token files, and starts the test server:
 
 ```bash
 export BROKER_TOKEN='...'
+export VAULT_TOKEN='...'
 ./browser-extension/scripts/run-dev-test.sh
 ```
 
-It does **not** overwrite an existing `dev-credentials.json` or `broker.token`.
+It does **not** overwrite existing token files. You must add a test credential to the vault manually (see below).
 
 ## Install the native host
 

@@ -14,10 +14,13 @@ Thumbs.db
 .env.*
 *.token
 dev-credentials.json
+vault.env
+vault.db
 
 # Build artifacts
 auth-broker/broker
 auth-broker/auth-broker
+vault-service/vault-service
 desktop-agent/authctl
 desktop-agent/ua-browser-host
 *.exe

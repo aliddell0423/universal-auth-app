@@ -21,19 +21,40 @@ echo "==> auth-broker container"
 ssh "${SSH_OPTS[@]}" "$TARGET" 'podman ps -a --filter name=auth-broker --format "{{.Names}}\t{{.Status}}\t{{.Ports}}"'
 
 echo
-echo "==> /healthz"
-HEALTH_URL="http://$AUTH_DEV_HOST:8080/healthz"
-if RESPONSE=$(curl -s --max-time 3 "$HEALTH_URL" 2>/dev/null); then
+echo "==> vault-service container"
+ssh "${SSH_OPTS[@]}" "$TARGET" 'podman ps -a --filter name=vault-service --format "{{.Names}}\t{{.Status}}\t{{.Ports}}"'
+
+echo
+echo "==> /healthz endpoints"
+
+BROKER_HEALTH="http://$AUTH_DEV_HOST:8080/healthz"
+if RESPONSE=$(curl -s --max-time 3 "$BROKER_HEALTH" 2>/dev/null); then
     if [ "$RESPONSE" = '{"status":"ok"}' ]; then
-        echo "$HEALTH_URL"
+        echo "$BROKER_HEALTH"
         echo "$RESPONSE"
     else
-        echo "$HEALTH_URL"
+        echo "$BROKER_HEALTH"
         echo "$RESPONSE"
-        echo "unhealthy" >&2
+        echo "auth-broker unhealthy" >&2
         exit 1
     fi
 else
-    echo "unhealthy" >&2
+    echo "auth-broker unhealthy" >&2
+    exit 1
+fi
+
+VAULT_HEALTH="http://$AUTH_DEV_HOST:8081/healthz"
+if RESPONSE=$(curl -s --max-time 3 "$VAULT_HEALTH" 2>/dev/null); then
+    if [ "$RESPONSE" = '{"status":"ok"}' ]; then
+        echo "$VAULT_HEALTH"
+        echo "$RESPONSE"
+    else
+        echo "$VAULT_HEALTH"
+        echo "$RESPONSE"
+        echo "vault-service unhealthy" >&2
+        exit 1
+    fi
+else
+    echo "vault-service unhealthy" >&2
     exit 1
 fi

@@ -266,13 +266,35 @@ The desktop:
 - no persistent desktop daemon
 - no Android remote attestation
 
+## Vault service
+
+`vault-service/` is a new Go service that stores credentials in a SQLite database. Each credential is encrypted with a fresh random AES-256-GCM DEK, and that DEK is wrapped by a temporary `VAULT_KEK` held on the Ubuntu server. See `vault-service/README.md` for details.
+
+This is the first real encrypted credential store. It is still development-only because the server holds the KEK; a full server compromise could expose credentials. Pixel-controlled key release is future work.
+
+### Deploy
+
+On the VM create `~/.config/universal-auth-vault/vault.env` with `VAULT_TOKEN` and `VAULT_KEK` (mode `0600`). Then:
+
+```bash
+./scripts/deploy-dev.sh
+```
+
+This builds and deploys both `auth-broker` and `vault-service`, bind-mounting `~/.local/share/universal-auth/vault` to `/data` for persistence.
+
 ## Browser extension prototype
 
-`browser-extension/` is a Firefox MV3 prototype that fills a login form after Pixel biometric approval. It does not implement an encrypted credential vault, background daemon, or mobile transport.
+`browser-extension/` is a Firefox MV3 prototype that fills a login form after Pixel biometric approval. It uses the `vault-service` for credential storage.
 
 ### Native host
 
-The native host `ua-browser-host` is launched by Firefox Native Messaging. It reads a framed JSON request, looks up a fake development credential by exact browser-derived origin, runs the existing Universal Auth `credential_access` approval flow, and only returns the credential after Fedora independently verifies the Pixel signature.
+The native host `ua-browser-host` is launched by Firefox Native Messaging. It:
+
+1. Receives a browser-derived origin.
+2. Asks `vault-service` whether a credential exists (metadata only).
+3. If found, creates a Universal Auth `credential_access` request.
+4. Only after Fedora independently verifies the Pixel signature does it call the vault secret endpoint.
+5. Returns the username/password to the extension, which fills the form.
 
 ### Install
 
@@ -280,17 +302,19 @@ The native host `ua-browser-host` is launched by Firefox Native Messaging. It re
 ./browser-extension/scripts/install-firefox-dev.sh
 ```
 
-Create `~/.config/universal-auth/dev-credentials.json` (mode `0600`) with fake credentials and `~/.config/universal-auth/broker.token` (mode `0600`) if `BROKER_TOKEN` is not exported. See `browser-extension/README.md` for the manual test procedure.
+Configure `~/.config/universal-auth/config.json` with `vault_url`, store `~/.config/universal-auth/vault.token` (mode `0600`) if `VAULT_TOKEN` is not exported, and create a fake credential through the vault API. See `browser-extension/README.md` and `vault-service/README.md` for the manual test procedure.
 
 ### Security notes for the browser prototype
 
-- The extension never receives the broker token or Pixel private key.
+- The extension never receives the broker token, vault token, or Pixel private key.
 - The background script derives the origin from `sender.url`; the page cannot request an arbitrary origin.
 - Credential lookup is exact string matching; `https://github.com` does not match `https://github.com.attacker.example`.
 - Credentials are returned only after a locally verified Pixel signature.
 - The form is not submitted automatically.
+- `ua-browser-host` does not decrypt the credential until the Pixel signature is verified.
 
 ## Security notes
 
-- Never commit `BROKER_TOKEN`, SSH private keys, passwords, `broker.token`, or `dev-credentials.json` to this repository.
+- Never commit `BROKER_TOKEN`, `VAULT_TOKEN`, `VAULT_KEK`, SSH private keys, passwords, `broker.token`, `vault.token`, or `vault.db` to this repository.
 - The bearer token is development-only and will be replaced by cryptographic device identities later.
+- The vault `VAULT_KEK` is server-held in this milestone; do not store real credentials until Pixel-controlled key release is implemented.
