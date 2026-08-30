@@ -266,7 +266,31 @@ The desktop:
 - no persistent desktop daemon
 - no Android remote attestation
 
+## Browser extension prototype
+
+`browser-extension/` is a Firefox MV3 prototype that fills a login form after Pixel biometric approval. It does not implement an encrypted credential vault, background daemon, or mobile transport.
+
+### Native host
+
+The native host `ua-browser-host` is launched by Firefox Native Messaging. It reads a framed JSON request, looks up a fake development credential by exact browser-derived origin, runs the existing Universal Auth `credential_access` approval flow, and only returns the credential after Fedora independently verifies the Pixel signature.
+
+### Install
+
+```bash
+./browser-extension/scripts/install-firefox-dev.sh
+```
+
+Create `~/.config/universal-auth/dev-credentials.json` (mode `0600`) with fake credentials and `~/.config/universal-auth/broker.token` (mode `0600`) if `BROKER_TOKEN` is not exported. See `browser-extension/README.md` for the manual test procedure.
+
+### Security notes for the browser prototype
+
+- The extension never receives the broker token or Pixel private key.
+- The background script derives the origin from `sender.url`; the page cannot request an arbitrary origin.
+- Credential lookup is exact string matching; `https://github.com` does not match `https://github.com.attacker.example`.
+- Credentials are returned only after a locally verified Pixel signature.
+- The form is not submitted automatically.
+
 ## Security notes
 
-- Never commit `BROKER_TOKEN`, SSH private keys, or passwords to this repository.
+- Never commit `BROKER_TOKEN`, SSH private keys, passwords, `broker.token`, or `dev-credentials.json` to this repository.
 - The bearer token is development-only and will be replaced by cryptographic device identities later.

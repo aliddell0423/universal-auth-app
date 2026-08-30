@@ -1,0 +1,9 @@
+{
+  "name": "com.aliddell.universalauth",
+  "description": "Universal Auth browser bridge",
+  "path": "@@HOST_PATH@@",
+  "type": "stdio",
+  "allowed_extensions": [
+    "universal-auth@aliddell.dev"
+  ]
+}

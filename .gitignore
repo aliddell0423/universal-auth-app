@@ -12,10 +12,14 @@ Thumbs.db
 # Local environment / secrets
 .env
 .env.*
+*.token
+dev-credentials.json
 
 # Build artifacts
 auth-broker/broker
 auth-broker/auth-broker
+desktop-agent/authctl
+desktop-agent/ua-browser-host
 *.exe
 
 # Logs

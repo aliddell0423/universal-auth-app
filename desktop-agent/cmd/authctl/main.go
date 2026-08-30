@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -13,12 +12,11 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"time"
 
+	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/auth"
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/broker"
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/config"
-	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/verify"
 )
 
 const (
@@ -28,8 +26,6 @@ const (
 	exitSecurityFailure = 4
 	exitError           = 5
 )
-
-const envBrokerToken = "BROKER_TOKEN"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -53,28 +49,6 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "usage: authctl <pair|request|inspect> [flags]")
 }
 
-func loadToken() (string, error) {
-	tok := os.Getenv(envBrokerToken)
-	if tok == "" {
-		return "", fmt.Errorf("BROKER_TOKEN is required")
-	}
-	return tok, nil
-}
-
-func configPath() string {
-	if p := os.Getenv("UNIVERSAL_AUTH_CONFIG"); p != "" {
-		return p
-	}
-	home := os.Getenv("HOME")
-	if home == "" {
-		u, err := os.UserHomeDir()
-		if err == nil {
-			home = u
-		}
-	}
-	return filepath.Join(home, ".config", "universal-auth", "config.json")
-}
-
 func pair(args []string) {
 	fs := flag.NewFlagSet("pair", flag.ExitOnError)
 	brokerURL := fs.String("broker", "http://192.168.1.167:8080", "broker base URL")
@@ -87,7 +61,7 @@ func pair(args []string) {
 		fmt.Fprintln(os.Stderr, "error: --expected-device-id is required")
 		os.Exit(exitError)
 	}
-	token, err := loadToken()
+	token, err := config.LoadBrokerToken()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(exitError)
@@ -112,7 +86,7 @@ func pair(args []string) {
 		BrokerURL:     *brokerURL,
 		TrustedDevice: config.TrustedDevice(td),
 	}
-	if err := cfg.Save(configPath()); err != nil {
+	if err := cfg.Save(config.DefaultPath()); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(exitError)
 	}
@@ -155,7 +129,7 @@ func validateTrustedDevice(td broker.TrustedDevice, expected string) error {
 
 func request(args []string) {
 	fs := flag.NewFlagSet("request", flag.ExitOnError)
-	source := fs.String("source", defaultSource(), "requesting source identity")
+	source := fs.String("source", auth.DefaultSource(), "requesting source identity")
 	kind := fs.String("kind", "", "request kind (required)")
 	resource := fs.String("resource", "", "request resource (required)")
 	message := fs.String("message", "", "request message (required)")
@@ -170,94 +144,60 @@ func request(args []string) {
 		os.Exit(exitError)
 	}
 
-	token, err := loadToken()
+	token, err := config.LoadBrokerToken()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(exitError)
 	}
-	cfg, err := config.Load(configPath())
+	cfg, err := config.Load("")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(exitError)
 	}
 
 	client := broker.NewClient(cfg.BrokerURL, token)
-
-	clientNonce, err := generateClientNonce()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(exitError)
-	}
+	svc := &auth.Service{Client: client, Config: cfg}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	createReq := broker.CreateRequest{
-		Source:      *source,
-		Kind:        *kind,
-		Resource:    *resource,
-		Message:     *message,
-		ClientNonce: clientNonce,
-	}
+	pollCtx, pollCancel := context.WithTimeout(ctx, *timeout)
+	defer pollCancel()
+
 	fmt.Println("Creating request...")
-	req, err := client.CreateRequest(ctx, createReq)
+	fmt.Println("Waiting for Pixel approval...")
+
+	res, err := svc.Authenticate(pollCtx, auth.Request{
+		Source:   *source,
+		Kind:     *kind,
+		Resource: *resource,
+		Message:  *message,
+	}, *poll)
+
+	if res.Status == auth.StatusSecurityError {
+		fmt.Fprintf(os.Stderr, "SECURITY ERROR:\nBroker reported approval but Pixel signature verification failed: %v\n", err)
+		os.Exit(exitSecurityFailure)
+	}
+	if res.Status == auth.StatusTimeout {
+		fmt.Println("TIMEOUT")
+		os.Exit(exitTimeout)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(exitError)
 	}
-	if err := client.ValidatePendingResponse(req, createReq); err != nil {
-		fmt.Fprintf(os.Stderr, "SECURITY ERROR: %v\n", err)
-		os.Exit(exitSecurityFailure)
-	}
 
-	intent := verify.PendingIntent{
-		RequestID:   req.ID,
-		Challenge:   req.Challenge,
-		ClientNonce: clientNonce,
-		Source:      *source,
-		Kind:        *kind,
-		Resource:    *resource,
-		Message:     *message,
-	}
-
-	fmt.Println("Waiting for Pixel approval...")
-
-	pollCtx, pollCancel := context.WithTimeout(ctx, *timeout)
-	defer pollCancel()
-
-	ticker := time.NewTicker(*poll)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-pollCtx.Done():
-			fmt.Println("TIMEOUT")
-			os.Exit(exitTimeout)
-		case <-ticker.C:
-			result, err := client.GetRequest(ctx, req.ID)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: %v\n", err)
-				os.Exit(exitError)
-			}
-			switch result.Status {
-			case "approved":
-				if err := verify.VerifyApproval(cfg.TrustedDevice, intent, result); err != nil {
-					fmt.Fprintf(os.Stderr, "SECURITY ERROR:\nBroker reported approval but Pixel signature verification failed: %v\n", err)
-					os.Exit(exitSecurityFailure)
-				}
-				fmt.Println("APPROVED")
-				fmt.Println("Pixel signature verified.")
-				os.Exit(exitApproved)
-			case "denied":
-				fmt.Println("DENIED")
-				os.Exit(exitDenied)
-			case "pending":
-				// continue waiting
-			default:
-				fmt.Fprintf(os.Stderr, "error: unexpected status %s\n", result.Status)
-				os.Exit(exitError)
-			}
-		}
+	switch res.Status {
+	case auth.StatusApproved:
+		fmt.Println("APPROVED")
+		fmt.Println("Pixel signature verified.")
+		os.Exit(exitApproved)
+	case auth.StatusDenied:
+		fmt.Println("DENIED")
+		os.Exit(exitDenied)
+	default:
+		fmt.Fprintf(os.Stderr, "error: unexpected status %s\n", res.Status)
+		os.Exit(exitError)
 	}
 }
 
@@ -267,7 +207,7 @@ func inspect(args []string) {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(exitError)
 	}
-	cfg, err := config.Load(configPath())
+	cfg, err := config.Load("")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(exitError)
@@ -276,20 +216,4 @@ func inspect(args []string) {
 	fmt.Printf("Trusted device: %s\n", cfg.TrustedDevice.Name)
 	fmt.Printf("Device ID: %s\n", cfg.TrustedDevice.DeviceID)
 	fmt.Printf("Algorithm: %s\n", cfg.TrustedDevice.Algorithm)
-}
-
-func defaultSource() string {
-	h, _ := os.Hostname()
-	if h == "" {
-		return "andrew-fedora"
-	}
-	return h + "-fedora"
-}
-
-func generateClientNonce() (string, error) {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
 }
