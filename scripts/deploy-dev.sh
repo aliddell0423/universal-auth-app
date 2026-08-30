@@ -50,6 +50,12 @@ if [ "$PERMS" != "600" ]; then
     exit 1
 fi
 
+echo "==> Verifying remote BROKER_TOKEN value"
+if ! ssh "${SSH_OPTS[@]}" "$TARGET" 'grep -qE "^BROKER_TOKEN=.+$" ~/.config/auth-broker/auth-broker.env'; then
+    echo "ERROR: ~/.config/auth-broker/auth-broker.env must contain a non-empty BROKER_TOKEN value" >&2
+    exit 1
+fi
+
 echo "==> Transferring image to $TARGET"
 podman save auth-broker:dev | ssh "${SSH_OPTS[@]}" "$TARGET" podman load
 
@@ -70,7 +76,7 @@ for i in {1..15}; do
     if RESPONSE=$(curl -s --max-time 3 "$HEALTH_URL" 2>/dev/null); then
         if [ "$RESPONSE" = '{"status":"ok"}' ]; then
             echo
-echo "auth-broker deployed successfully"
+            echo "auth-broker deployed successfully"
             echo "$HEALTH_URL"
             exit 0
         fi

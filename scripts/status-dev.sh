@@ -24,8 +24,16 @@ echo
 echo "==> /healthz"
 HEALTH_URL="http://$AUTH_DEV_HOST:8080/healthz"
 if RESPONSE=$(curl -s --max-time 3 "$HEALTH_URL" 2>/dev/null); then
-    echo "$HEALTH_URL"
-    echo "$RESPONSE"
+    if [ "$RESPONSE" = '{"status":"ok"}' ]; then
+        echo "$HEALTH_URL"
+        echo "$RESPONSE"
+    else
+        echo "$HEALTH_URL"
+        echo "$RESPONSE"
+        echo "unhealthy" >&2
+        exit 1
+    fi
 else
-    echo "unhealthy"
+    echo "unhealthy" >&2
+    exit 1
 fi

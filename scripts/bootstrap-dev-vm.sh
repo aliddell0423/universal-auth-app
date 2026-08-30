@@ -26,8 +26,15 @@ fi
 
 echo "==> Checking for Podman on the VM"
 if ! ssh "${SSH_OPTS[@]}" "$TARGET" "command -v podman" >/dev/null 2>&1; then
-    echo "ERROR: Podman is not installed on $TARGET" >&2
-    echo "Install it with: sudo dnf install -y podman" >&2
+    if ssh "${SSH_OPTS[@]}" "$TARGET" 'grep -qE "^(ID|ID_LIKE)=.*(ubuntu|debian)" /etc/os-release'; then
+        echo "ERROR: Podman is not installed on $TARGET" >&2
+        echo "Install it with the following commands on the VM:" >&2
+        echo "  sudo apt-get update" >&2
+        echo "  sudo apt-get install -y podman" >&2
+    else
+        echo "ERROR: Podman is not installed on $TARGET" >&2
+        echo "Install it using the VM's package manager." >&2
+    fi
     exit 1
 fi
 
@@ -37,12 +44,8 @@ ssh "${SSH_OPTS[@]}" "$TARGET" 'mkdir -p -m 700 ~/.config/auth-broker'
 echo "==> Checking remote BROKER_TOKEN file"
 if ! ssh "${SSH_OPTS[@]}" "$TARGET" 'test -f ~/.config/auth-broker/auth-broker.env'; then
     echo "ERROR: ~/.config/auth-broker/auth-broker.env does not exist on $TARGET" >&2
-    echo "Create it on the VM with mode 600, for example:" >&2
-    echo "  mkdir -p -m 700 ~/.config/auth-broker" >&2
-    echo "  cat > ~/.config/auth-broker/auth-broker.env <<'EOF'" >&2
-    echo "  BROKER_TOKEN=dev-only-change-this" >&2
-    echo "  EOF" >&2
-    echo "  chmod 600 ~/.config/auth-broker/auth-broker.env" >&2
+    echo "Create it on the VM with a non-empty BROKER_TOKEN value and mode 600." >&2
+    echo "Use the README instructions to generate a secure random token." >&2
     exit 1
 fi
 
@@ -50,6 +53,12 @@ echo "==> Verifying remote env file permissions"
 PERMS=$(ssh "${SSH_OPTS[@]}" "$TARGET" 'stat -c %a ~/.config/auth-broker/auth-broker.env')
 if [ "$PERMS" != "600" ]; then
     echo "ERROR: ~/.config/auth-broker/auth-broker.env must be mode 600 (got $PERMS)" >&2
+    exit 1
+fi
+
+echo "==> Verifying remote BROKER_TOKEN value"
+if ! ssh "${SSH_OPTS[@]}" "$TARGET" 'grep -qE "^BROKER_TOKEN=.+$" ~/.config/auth-broker/auth-broker.env'; then
+    echo "ERROR: ~/.config/auth-broker/auth-broker.env must contain a non-empty BROKER_TOKEN value" >&2
     exit 1
 fi
 

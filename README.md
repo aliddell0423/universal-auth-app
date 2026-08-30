@@ -24,17 +24,20 @@ export AUTH_DEV_SSH_KEY=~/.ssh/id_ed25519
 ./scripts/bootstrap-dev-vm.sh
 ```
 
-This verifies SSH, Podman, and the `~/.config/auth-broker/` directory. If the environment file is missing, create it on the VM before deploying:
+This verifies SSH, Podman, and the `~/.config/auth-broker/` directory. If the environment file is missing, create it on the VM before deploying.
+
+This requires `openssl` (installed by default on Ubuntu Server; otherwise install with `sudo apt-get install -y openssl`).
 
 ```bash
 mkdir -p -m 700 ~/.config/auth-broker
-cat > ~/.config/auth-broker/auth-broker.env <<'EOF'
-BROKER_TOKEN=dev-only-change-this
-EOF
+
+printf 'BROKER_TOKEN=%s\n' "$(openssl rand -hex 32)" \
+  > ~/.config/auth-broker/auth-broker.env
+
 chmod 600 ~/.config/auth-broker/auth-broker.env
 ```
 
-Use a real development token. The file must always be mode `600` and must never be committed.
+This creates a random 256-bit development bearer token. The file must always be mode `600`, must never be committed, and is DEVELOPMENT ONLY. It will later be replaced by cryptographic device identities.
 
 ### Normal deployment
 
