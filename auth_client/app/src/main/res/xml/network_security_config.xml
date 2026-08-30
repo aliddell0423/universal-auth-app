@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Default: do not allow cleartext traffic. Debug builds override this for the LAN broker. -->
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

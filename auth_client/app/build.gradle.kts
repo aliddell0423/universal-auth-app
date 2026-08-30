@@ -1,21 +1,33 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
+    alias(libs.plugins.compose.compiler)
+    alias(libs.plugins.kotlin.serialization)
+}
+
+val localProperties = Properties().apply {
+    val localFile = rootProject.file("local.properties")
+    if (localFile.exists()) {
+        localFile.inputStream().use { load(it) }
+    }
 }
 
 android {
-    namespace = "com.example.auth_client"
+    namespace = "com.aliddell.universalauth"
     compileSdk {
         version = release(37)
     }
 
     defaultConfig {
-        applicationId = "com.example.auth_client"
-        minSdk = 24
+        applicationId = "com.aliddell.universalauth"
+        minSdk = 28
         targetSdk = 37
         versionCode = 1
         versionName = "1.0"
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "BROKER_BASE_URL", "\"http://192.168.1.167:8080\"")
+        buildConfigField("String", "BROKER_TOKEN", "\"${localProperties.getProperty("broker.token", "")}\"")
     }
 
     buildTypes {
@@ -25,6 +37,10 @@ android {
             }
         }
     }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
@@ -32,10 +48,17 @@ android {
 }
 
 dependencies {
-    implementation(libs.androidx.appcompat)
-    implementation(libs.androidx.core.ktx)
+    implementation(platform(libs.compose.bom))
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.lifecycle.viewmodel.ktx)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.compose.material3)
+    implementation(libs.compose.ui)
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.okhttp)
     implementation(libs.material)
+    debugImplementation(libs.compose.ui.tooling)
+    testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.junit)
-    androidTestImplementation(libs.androidx.espresso.core)
-    androidTestImplementation(libs.androidx.junit)
 }
