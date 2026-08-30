@@ -33,6 +33,7 @@ type Request struct {
 	Resource      string         `json:"resource"`
 	Message       string         `json:"message"`
 	Challenge     string         `json:"challenge"`
+	ClientNonce   string         `json:"client_nonce"`
 	Status        RequestStatus  `json:"status"`
 	CreatedAt     time.Time      `json:"created_at"`
 	DecidedAt     *time.Time     `json:"decided_at,omitempty"`
@@ -40,10 +41,11 @@ type Request struct {
 }
 
 type CreateRequest struct {
-	Source   string `json:"source"`
-	Kind     string `json:"kind"`
-	Resource string `json:"resource"`
-	Message  string `json:"message"`
+	Source      string `json:"source"`
+	Kind        string `json:"kind"`
+	Resource    string `json:"resource"`
+	Message     string `json:"message"`
+	ClientNonce string `json:"client_nonce"`
 }
 
 type Decision struct {
@@ -67,6 +69,7 @@ var (
 	ErrDeviceNotFound        = errors.New("device not registered")
 	ErrDeviceMismatch        = errors.New("device id does not match the trusted device")
 	ErrInvalidSignature      = errors.New("invalid signature")
+	ErrMissingClientNonce    = errors.New("client_nonce is required")
 )
 
 type Store struct {
@@ -79,7 +82,10 @@ func NewStore() *Store {
 	return &Store{reqs: make(map[string]*Request)}
 }
 
-func (s *Store) Create(source, kind, resource, message string) (*Request, error) {
+func (s *Store) Create(c CreateRequest) (*Request, error) {
+	if c.ClientNonce == "" {
+		return nil, ErrMissingClientNonce
+	}
 	id, err := generateID()
 	if err != nil {
 		return nil, err
@@ -90,14 +96,15 @@ func (s *Store) Create(source, kind, resource, message string) (*Request, error)
 	}
 	now := time.Now().UTC()
 	req := &Request{
-		ID:        id,
-		Source:    source,
-		Kind:      kind,
-		Resource:  resource,
-		Message:   message,
-		Challenge: challenge,
-		Status:    StatusPending,
-		CreatedAt: now,
+		ID:          id,
+		Source:      c.Source,
+		Kind:        c.Kind,
+		Resource:    c.Resource,
+		Message:     c.Message,
+		Challenge:   challenge,
+		ClientNonce: c.ClientNonce,
+		Status:      StatusPending,
+		CreatedAt:   now,
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

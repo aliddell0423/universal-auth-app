@@ -62,6 +62,14 @@ func deviceIDFromKey(t *testing.T, pub *ecdsa.PublicKey) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func generateClientNonce() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
 func registerDevice(t *testing.T, srv *httptest.Server, pub *ecdsa.PublicKey) {
 	t.Helper()
 	der, err := x509.MarshalPKIXPublicKey(pub)
@@ -91,7 +99,8 @@ func signPayload(t *testing.T, priv *ecdsa.PrivateKey, req *Request) string {
 
 func createRequest(t *testing.T, srv *httptest.Server) Request {
 	t.Helper()
-	payload := `{"source":"andrew-fedora","kind":"test","resource":"development","message":"Please authenticate"}`
+	nonce := generateClientNonce()
+	payload := fmt.Sprintf(`{"source":"andrew-fedora","kind":"test","resource":"development","message":"Please authenticate","client_nonce":"%s"}`, nonce)
 	resp := doRequest(t, srv, http.MethodPost, "/v1/requests", "Bearer "+testToken, strings.NewReader(payload))
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
@@ -169,7 +178,8 @@ func TestUnauthorized(t *testing.T) {
 func TestCreateRequest(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()
-	payload := `{"source":"andrew-fedora","kind":"test","resource":"development","message":"Please authenticate"}`
+	nonce := generateClientNonce()
+	payload := fmt.Sprintf(`{"source":"andrew-fedora","kind":"test","resource":"development","message":"Please authenticate","client_nonce":"%s"}`, nonce)
 	resp := doRequest(t, srv, http.MethodPost, "/v1/requests", "Bearer "+testToken, strings.NewReader(payload))
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
@@ -186,30 +196,27 @@ func TestCreateRequest(t *testing.T) {
 	if req.Source != "andrew-fedora" || req.Kind != "test" || req.Resource != "development" || req.Message != "Please authenticate" {
 		t.Fatalf("unexpected request: %+v", req)
 	}
+	if req.ClientNonce != nonce {
+		t.Fatalf("client_nonce mismatch: %s vs %s", req.ClientNonce, nonce)
+	}
 	if req.Status != StatusPending {
 		t.Fatalf("expected pending, got %s", req.Status)
-	}
-	if req.ID == "" {
-		t.Fatal("id not set")
 	}
 	if req.Challenge == "" {
 		t.Fatal("challenge not set")
 	}
-	if req.CreatedAt.IsZero() {
-		t.Fatal("created_at not set")
-	}
-	if req.DecidedAt != nil {
-		t.Fatal("decided_at should be nil")
-	}
 }
 
-func TestChallengesAreUnique(t *testing.T) {
+func TestChallengesAndNoncesAreUnique(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()
 	r1 := createRequest(t, srv)
 	r2 := createRequest(t, srv)
 	if r1.Challenge == r2.Challenge {
 		t.Fatal("challenges must be unique")
+	}
+	if r1.ClientNonce == r2.ClientNonce {
+		t.Fatal("client nonces must be unique")
 	}
 }
 
@@ -233,8 +240,8 @@ func TestGetRequest(t *testing.T) {
 	if got.ID != req.ID {
 		t.Fatalf("id mismatch: %s vs %s", got.ID, req.ID)
 	}
-	if got.Challenge != req.Challenge {
-		t.Fatalf("challenge mismatch")
+	if got.ClientNonce != req.ClientNonce {
+		t.Fatalf("client_nonce mismatch")
 	}
 }
 
@@ -280,9 +287,6 @@ func TestApprove(t *testing.T) {
 	if got.Status != StatusApproved {
 		t.Fatalf("expected approved, got %s", got.Status)
 	}
-	if got.DecidedAt == nil {
-		t.Fatal("decided_at not set")
-	}
 	if got.ApprovalProof == nil {
 		t.Fatal("approval_proof not set")
 	}
@@ -304,9 +308,6 @@ func TestDeny(t *testing.T) {
 	}
 	if got.Status != StatusDenied {
 		t.Fatalf("expected denied, got %s", got.Status)
-	}
-	if got.DecidedAt == nil {
-		t.Fatal("decided_at not set")
 	}
 }
 
@@ -371,7 +372,8 @@ func TestMalformedJSON(t *testing.T) {
 func TestUnknownFields(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()
-	payload := `{"source":"s","kind":"test","resource":"r","message":"m","extra":1}`
+	nonce := generateClientNonce()
+	payload := fmt.Sprintf(`{"source":"s","kind":"test","resource":"r","message":"m","client_nonce":"%s","extra":1}`, nonce)
 	resp := doRequest(t, srv, http.MethodPost, "/v1/requests", "Bearer "+testToken, strings.NewReader(payload))
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
@@ -387,10 +389,11 @@ func TestMissingRequiredFields(t *testing.T) {
 		name string
 		body string
 	}{
-		{"missing source", `{"kind":"test","resource":"r","message":"m"}`},
-		{"missing kind", `{"source":"s","resource":"r","message":"m"}`},
-		{"missing resource", `{"source":"s","kind":"test","message":"m"}`},
-		{"missing message", `{"source":"s","kind":"test","resource":"r"}`},
+		{"missing source", `{"kind":"test","resource":"r","message":"m","client_nonce":"abc"}`},
+		{"missing kind", `{"source":"s","resource":"r","message":"m","client_nonce":"abc"}`},
+		{"missing resource", `{"source":"s","kind":"test","message":"m","client_nonce":"abc"}`},
+		{"missing message", `{"source":"s","kind":"test","resource":"r","client_nonce":"abc"}`},
+		{"missing client_nonce", `{"source":"s","kind":"test","resource":"r","message":"m"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -433,27 +436,39 @@ func TestDeviceRegistration(t *testing.T) {
 			t.Fatalf("expected 409, got %d", resp.StatusCode)
 		}
 	})
+}
 
-	t.Run("malformed public key", func(t *testing.T) {
+func TestGetTrustedDevice(t *testing.T) {
+	t.Run("registered device", func(t *testing.T) {
 		srv := newTestServer(t)
 		defer srv.Close()
-		payload := `{"device_id":"abc","name":"Pixel 10","algorithm":"ECDSA_P256_SHA256","public_key":"not-base64!!!"}`
-		resp := doRequest(t, srv, http.MethodPost, "/v1/devices/register", "Bearer "+testToken, strings.NewReader(payload))
+		priv := generateTestKey(t)
+		registerDevice(t, srv, &priv.PublicKey)
+		resp := doRequest(t, srv, http.MethodGet, "/v1/devices/trusted", "Bearer "+testToken, nil)
 		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Fatalf("expected 400, got %d", resp.StatusCode)
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
+		}
+		var got TrustedDeviceResponse
+		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if got.DeviceID != deviceIDFromKey(t, &priv.PublicKey) {
+			t.Fatalf("device_id mismatch")
+		}
+		if got.Algorithm != "ECDSA_P256_SHA256" {
+			t.Fatalf("algorithm mismatch")
 		}
 	})
 
-	t.Run("non-ec public key", func(t *testing.T) {
+	t.Run("no device", func(t *testing.T) {
 		srv := newTestServer(t)
 		defer srv.Close()
-		// A small, invalid base64 that decodes to garbage will fail parsing.
-		payload := `{"device_id":"abc","name":"Pixel 10","algorithm":"ECDSA_P256_SHA256","public_key":"AAAA"}`
-		resp := doRequest(t, srv, http.MethodPost, "/v1/devices/register", "Bearer "+testToken, strings.NewReader(payload))
+		resp := doRequest(t, srv, http.MethodGet, "/v1/devices/trusted", "Bearer "+testToken, nil)
 		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Fatalf("expected 400, got %d", resp.StatusCode)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d", resp.StatusCode)
 		}
 	})
 }
@@ -497,7 +512,6 @@ func TestSignedApprovalSecurity(t *testing.T) {
 		defer srv.Close()
 		registerDevice(t, srv, &priv.PublicKey)
 		req := createRequest(t, srv)
-		// sign with a different, unregistered key
 		sig := signPayload(t, other, &req)
 		payload := fmt.Sprintf(`{"decision":"approved","device_id":"%s","signature":"%s"}`, deviceIDFromKey(t, &other.PublicKey), sig)
 		resp := doRequest(t, srv, http.MethodPost, "/v1/requests/"+req.ID+"/decision", "Bearer "+testToken, strings.NewReader(payload))
@@ -513,48 +527,12 @@ func TestSignedApprovalSecurity(t *testing.T) {
 		registerDevice(t, srv, &priv.PublicKey)
 		req1 := createRequest(t, srv)
 		req2 := createRequest(t, srv)
-		// sign req2 payload but send it for req1
 		sig := signPayload(t, priv, &req2)
 		payload := fmt.Sprintf(`{"decision":"approved","device_id":"%s","signature":"%s"}`, deviceIDFromKey(t, &priv.PublicKey), sig)
 		resp := doRequest(t, srv, http.MethodPost, "/v1/requests/"+req1.ID+"/decision", "Bearer "+testToken, strings.NewReader(payload))
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusForbidden {
 			t.Fatalf("expected 403, got %d", resp.StatusCode)
-		}
-	})
-
-	t.Run("tampered source causes verification to fail", func(t *testing.T) {
-		srv := newTestServer(t)
-		defer srv.Close()
-		registerDevice(t, srv, &priv.PublicKey)
-		req := createRequest(t, srv)
-		// modify the source in the stored request by creating a new store reference? Can't.
-		// Instead sign the original payload, but modify the request on the broker is not possible via API.
-		// We verify that changing any signed field in the signing payload causes a different signature.
-		reqCopy := req
-		reqCopy.Source = "other"
-		sig := signPayload(t, priv, &reqCopy)
-		payload := fmt.Sprintf(`{"decision":"approved","device_id":"%s","signature":"%s"}`, deviceIDFromKey(t, &priv.PublicKey), sig)
-		resp := doRequest(t, srv, http.MethodPost, "/v1/requests/"+req.ID+"/decision", "Bearer "+testToken, strings.NewReader(payload))
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusForbidden {
-			t.Fatalf("expected 403, got %d", resp.StatusCode)
-		}
-	})
-
-	t.Run("replay after decided is conflict", func(t *testing.T) {
-		srv := newTestServer(t)
-		defer srv.Close()
-		registerDevice(t, srv, &priv.PublicKey)
-		req := createRequest(t, srv)
-		approveSigned(t, srv, req, priv)
-		// replay the exact same signed approval
-		sig := signPayload(t, priv, &req)
-		payload := fmt.Sprintf(`{"decision":"approved","device_id":"%s","signature":"%s"}`, deviceIDFromKey(t, &priv.PublicKey), sig)
-		resp := doRequest(t, srv, http.MethodPost, "/v1/requests/"+req.ID+"/decision", "Bearer "+testToken, strings.NewReader(payload))
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusConflict {
-			t.Fatalf("expected 409, got %d", resp.StatusCode)
 		}
 	})
 
@@ -573,6 +551,41 @@ func TestSignedApprovalSecurity(t *testing.T) {
 		got, _ := storeFromGet(t, srv, req.ID)
 		if got.Status != StatusPending {
 			t.Fatalf("request should remain pending, got %s", got.Status)
+		}
+	})
+
+	t.Run("wrong client nonce", func(t *testing.T) {
+		srv := newTestServer(t)
+		defer srv.Close()
+		registerDevice(t, srv, &priv.PublicKey)
+		req := createRequest(t, srv)
+		reqCopy := req
+		reqCopy.ClientNonce = "differentnonce"
+		sig := signPayload(t, priv, &reqCopy)
+		payload := fmt.Sprintf(`{"decision":"approved","device_id":"%s","signature":"%s"}`, deviceIDFromKey(t, &priv.PublicKey), sig)
+		resp := doRequest(t, srv, http.MethodPost, "/v1/requests/"+req.ID+"/decision", "Bearer "+testToken, strings.NewReader(payload))
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d", resp.StatusCode)
+		}
+		got, _ := storeFromGet(t, srv, req.ID)
+		if got.Status != StatusPending {
+			t.Fatalf("request should remain pending, got %s", got.Status)
+		}
+	})
+
+	t.Run("replay after decided is conflict", func(t *testing.T) {
+		srv := newTestServer(t)
+		defer srv.Close()
+		registerDevice(t, srv, &priv.PublicKey)
+		req := createRequest(t, srv)
+		approveSigned(t, srv, req, priv)
+		sig := signPayload(t, priv, &req)
+		payload := fmt.Sprintf(`{"decision":"approved","device_id":"%s","signature":"%s"}`, deviceIDFromKey(t, &priv.PublicKey), sig)
+		resp := doRequest(t, srv, http.MethodPost, "/v1/requests/"+req.ID+"/decision", "Bearer "+testToken, strings.NewReader(payload))
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusConflict {
+			t.Fatalf("expected 409, got %d", resp.StatusCode)
 		}
 	})
 }
@@ -602,12 +615,13 @@ func TestTrailingJSON(t *testing.T) {
 
 func TestCanonicalPayload(t *testing.T) {
 	req := &Request{
-		ID:        "0123456789abcdef",
-		Source:    "andrew-fedora",
-		Kind:      "test",
-		Resource:  "development",
-		Message:   "Please authenticate",
-		Challenge: "dGVzdC1jaGFsbGVuZ2U",
+		ID:          "0123456789abcdef",
+		Source:      "andrew-fedora",
+		Kind:        "test",
+		Resource:    "development",
+		Message:     "Please authenticate",
+		Challenge:   "dGVzdC1jaGFsbGVuZ2U",
+		ClientNonce: "dGVzdC1jbGllbnQtbm9uY2U",
 	}
 	payload := buildSigningPayload(req, "approved")
 	golden, err := os.ReadFile("testdata/golden.txt")

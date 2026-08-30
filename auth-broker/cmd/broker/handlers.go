@@ -26,6 +26,13 @@ type DeviceRegistration struct {
 	PublicKey string `json:"public_key"`
 }
 
+type TrustedDeviceResponse struct {
+	DeviceID  string `json:"device_id"`
+	Name      string `json:"name"`
+	Algorithm string `json:"algorithm"`
+	PublicKey string `json:"public_key"`
+}
+
 func newServer(store *Store, token string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", handleHealth)
@@ -33,6 +40,7 @@ func newServer(store *Store, token string) http.Handler {
 	mux.HandleFunc("/v1/requests/", func(w http.ResponseWriter, r *http.Request) { handleRequestByID(w, r, store) })
 	mux.HandleFunc("/v1/requests", func(w http.ResponseWriter, r *http.Request) { handleCreate(w, r, store) })
 	mux.HandleFunc("/v1/devices/register", func(w http.ResponseWriter, r *http.Request) { handleRegisterDevice(w, r, store) })
+	mux.HandleFunc("/v1/devices/trusted", func(w http.ResponseWriter, r *http.Request) { handleGetTrustedDevice(w, r, store) })
 	return authMiddleware(mux, token)
 }
 
@@ -54,13 +62,17 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *Store) {
 		writeError(w, http.StatusBadRequest, "malformed or invalid JSON")
 		return
 	}
-	if c.Source == "" || c.Kind == "" || c.Resource == "" || c.Message == "" {
+	if c.Source == "" || c.Kind == "" || c.Resource == "" || c.Message == "" || c.ClientNonce == "" {
 		writeError(w, http.StatusBadRequest, "missing required fields")
 		return
 	}
-	req, err := store.Create(c.Source, c.Kind, c.Resource, c.Message)
+	req, err := store.Create(c)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
+		if errors.Is(err, ErrMissingClientNonce) {
+			writeError(w, http.StatusBadRequest, "client_nonce is required")
+		} else {
+			writeError(w, http.StatusInternalServerError, "internal error")
+		}
 		return
 	}
 	writeJSON(w, http.StatusCreated, req)
@@ -210,6 +222,29 @@ func handleRegisterDevice(w http.ResponseWriter, r *http.Request, store *Store) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func handleGetTrustedDevice(w http.ResponseWriter, r *http.Request, store *Store) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	dev := store.TrustedDevice()
+	if dev == nil {
+		writeError(w, http.StatusNotFound, "no trusted device registered")
+		return
+	}
+	der, err := x509.MarshalPKIXPublicKey(dev.PublicKey)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, TrustedDeviceResponse{
+		DeviceID:  dev.DeviceID,
+		Name:      dev.Name,
+		Algorithm: dev.Algorithm,
+		PublicKey: base64.StdEncoding.EncodeToString(der),
+	})
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {

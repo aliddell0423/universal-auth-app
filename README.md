@@ -194,6 +194,78 @@ This must fail and the request must remain `pending`.
 2. Tap **Deny**.
 3. Verify it becomes `denied` without a biometric prompt.
 
+## Desktop client
+
+`desktop-agent/` is the Fedora command-line client `authctl`. It treats the broker as an untrusted relay: it never accepts `"approved"` at face value and instead verifies the Pixel's ECDSA P-256 signature itself.
+
+### Usage
+
+```bash
+export BROKER_TOKEN='...'
+
+cd desktop-agent
+
+go run ./cmd/authctl pair \
+  --broker http://192.168.1.167:8080 \
+  --expected-device-id <PIXEL_DEVICE_ID>
+```
+
+```bash
+go run ./cmd/authctl request \
+  --source andrew-fedora \
+  --kind test \
+  --resource desktop-test \
+  --message "Approve this from Fedora"
+```
+
+### Trust model
+
+Before desktop verification:
+
+```text
+Pixel signs
+   ↓
+broker verifies
+   ↓
+desktop trusts broker status
+```
+
+After this milestone:
+
+```text
+Pixel signs
+   ↓
+broker relays/stores proof
+   ↓
+desktop verifies Pixel signature itself
+```
+
+The desktop:
+
+- pins the Pixel public key using an out-of-band `--expected-device-id`
+- creates requests with its own `client_nonce`
+- reconstructs the canonical `universal-auth:v2` payload from local intent values
+- verifies `SHA256withECDSA` against the pinned Pixel public key
+- only then prints `APPROVED` and exits `0`
+
+### Exit codes
+
+- `0` — approved and signature verified
+- `2` — denied
+- `3` — timeout
+- `4` — security verification failure
+- `5` — network/protocol/config error
+
+### Remaining limitations
+
+- HTTP instead of TLS
+- bearer token transport authentication
+- in-memory broker state
+- one trusted Pixel
+- manual fingerprint pairing via `--expected-device-id`
+- no persistent desktop daemon
+- no Android remote attestation
+
 ## Security notes
 
 - Never commit `BROKER_TOKEN`, SSH private keys, or passwords to this repository.

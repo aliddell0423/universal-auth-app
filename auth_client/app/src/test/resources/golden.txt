@@ -1,6 +1,7 @@
-universal-auth:v1
+universal-auth:v2
 request_id=MDEyMzQ1Njc4OWFiY2RlZg
 challenge=dGVzdC1jaGFsbGVuZ2U
+client_nonce=dGVzdC1jbGllbnQtbm9uY2U
 decision=YXBwcm92ZWQ
 source=YW5kcmV3LWZlZG9yYQ
 kind=dGVzdA

@@ -37,6 +37,7 @@ class AuthViewModelTest {
             resource = "dev",
             message = "msg",
             challenge = "challenge",
+            clientNonce = "nonce",
             status = "pending",
             createdAt = "2026-08-30T12:00:00Z",
             decidedAt = null
@@ -79,6 +80,7 @@ class AuthViewModelTest {
             resource = "dev",
             message = "msg",
             challenge = "challenge",
+            clientNonce = "nonce",
             status = "pending",
             createdAt = "2026-08-30T12:00:00Z",
             decidedAt = null
@@ -99,6 +101,7 @@ class AuthViewModelTest {
             resource = "dev",
             message = "msg",
             challenge = "challenge",
+            clientNonce = "nonce",
             status = "pending",
             createdAt = "2026-08-30T12:00:00Z",
             decidedAt = null

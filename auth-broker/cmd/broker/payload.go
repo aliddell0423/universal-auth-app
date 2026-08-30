@@ -8,9 +8,10 @@ import (
 
 func buildSigningPayload(req *Request, decision string) []byte {
 	var buf bytes.Buffer
-	fmt.Fprint(&buf, "universal-auth:v1\n")
+	fmt.Fprint(&buf, "universal-auth:v2\n")
 	fmt.Fprintf(&buf, "request_id=%s\n", b64url(req.ID))
 	fmt.Fprintf(&buf, "challenge=%s\n", req.Challenge)
+	fmt.Fprintf(&buf, "client_nonce=%s\n", req.ClientNonce)
 	fmt.Fprintf(&buf, "decision=%s\n", b64url(decision))
 	fmt.Fprintf(&buf, "source=%s\n", b64url(req.Source))
 	fmt.Fprintf(&buf, "kind=%s\n", b64url(req.Kind))
