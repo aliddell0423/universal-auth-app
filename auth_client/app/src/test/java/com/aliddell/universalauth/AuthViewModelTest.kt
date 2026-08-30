@@ -77,6 +77,25 @@ class AuthViewModelTest {
         assertEquals("connected", viewModel.uiState.value.status)
     }
 
+    @Test
+    fun deny_refreshesListWithoutApproval() {
+        val request = AuthRequest(
+            id = "1",
+            source = "pc",
+            kind = "test",
+            resource = "dev",
+            message = "msg",
+            status = "pending",
+            createdAt = "2026-08-30T12:00:00Z",
+            decidedAt = null
+        )
+        val viewModel = AuthViewModel(FakeAuthRepository(requests = listOf(request)))
+        viewModel.decide("1", false)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals("connected", viewModel.uiState.value.status)
+    }
+
     private class FakeAuthRepository(
         private val requests: List<AuthRequest> = emptyList(),
         private val throwHealth: Boolean = false

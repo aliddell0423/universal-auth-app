@@ -58,6 +58,7 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp)
     implementation(libs.material)
+    implementation(libs.androidx.biometric)
     debugImplementation(libs.compose.ui.tooling)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.junit)

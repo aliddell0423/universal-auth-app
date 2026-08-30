@@ -94,14 +94,35 @@ The app is currently hardcoded to `http://192.168.1.167:8080`.
 
 ### Current Android functionality
 
-The current app only:
+The current app:
 
 - fetches pending requests from the broker,
 - displays source, kind, resource, message, and creation time,
 - lets you approve or deny a request,
-- refreshes the list after a decision.
+- refreshes the list after a decision,
+- **requires strong biometric authentication (fingerprint/face) before Approve**.
 
-Biometrics, cryptographic signing, and other integrations are not yet implemented.
+Deny does not require biometric authentication.
+
+### Important security note
+
+The current biometric check is **UI gating only**. The app still sends a bearer-authenticated `POST` to the broker, and the broker does not yet receive cryptographic proof that a biometric authentication occurred. The next milestone will replace this with Android Keystore-backed signing so the broker can verify the device itself approved the request.
+
+### Manual test on Pixel 10
+
+1. Create a broker request from Fedora.
+2. Open/refresh Universal Auth on Pixel 10.
+3. Verify the request appears.
+4. Tap **Approve**.
+5. Verify the Android system biometric dialog appears.
+6. Cancel the prompt.
+7. Verify the broker request remains `pending`.
+8. Tap **Approve** again.
+9. Authenticate with the enrolled strong biometric.
+10. Verify the broker request becomes `approved`.
+11. Create another request.
+12. Tap **Deny**.
+13. Verify it becomes `denied` without a biometric prompt.
 
 ## Security notes
 

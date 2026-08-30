@@ -2,8 +2,12 @@
 package com.aliddell.universalauth
 
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import android.widget.Toast
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.viewModels
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -16,8 +20,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -26,23 +30,94 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.core.content.ContextCompat
 import com.aliddell.universalauth.data.AuthRequest
 import com.aliddell.universalauth.data.DefaultAuthRepository
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
+
+    private val authViewModel: AuthViewModel by viewModels {
+        AuthViewModel.Factory(DefaultAuthRepository())
+    }
+
+    private var pendingBiometricRequestId: String? = null
+    private lateinit var biometricPrompt: BiometricPrompt
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val repository = DefaultAuthRepository()
+
+        val executor = ContextCompat.getMainExecutor(this)
+        biometricPrompt = BiometricPrompt(this, executor,
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    super.onAuthenticationSucceeded(result)
+                    pendingBiometricRequestId?.let { id ->
+                        authViewModel.decide(id, true)
+                    }
+                    pendingBiometricRequestId = null
+                }
+
+                override fun onAuthenticationFailed() {
+                    super.onAuthenticationFailed()
+                    pendingBiometricRequestId = null
+                }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    super.onAuthenticationError(errorCode, errString)
+                    pendingBiometricRequestId = null
+                    if (errorCode != BiometricPrompt.ERROR_USER_CANCELED &&
+                        errorCode != BiometricPrompt.ERROR_CANCELED
+                    ) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Biometric error: $errString",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            })
+
         setContent {
-            val authViewModel: AuthViewModel = viewModel(factory = AuthViewModel.Factory(repository))
             val state = authViewModel.uiState.collectAsState()
             PendingRequestsScreen(
                 state = state.value,
                 onRefresh = { authViewModel.refresh() },
-                onDecide = { id, approved -> authViewModel.decide(id, approved) }
+                onApprove = { request -> onApprove(request) },
+                onDeny = { request -> authViewModel.decide(request.id, false) }
             )
         }
+    }
+
+    private fun onApprove(request: AuthRequest) {
+        if (pendingBiometricRequestId != null) return
+
+        val canAuth = BiometricManager.from(this)
+            .canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+        if (canAuth != BiometricManager.BIOMETRIC_SUCCESS) {
+            val message = when (canAuth) {
+                BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE ->
+                    "No strong biometric hardware is available."
+                BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE ->
+                    "Strong biometric hardware is temporarily unavailable."
+                BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED ->
+                    "No strong biometric is enrolled on this device."
+                else ->
+                    "Strong biometric authentication is not available."
+            }
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            return
+        }
+
+        pendingBiometricRequestId = request.id
+        val promptInfo = BiometricPrompt.PromptInfo.Builder()
+            .setTitle("Approve authentication request")
+            .setSubtitle("${request.source} / ${request.resource}")
+            .setDescription("Authenticate to approve this request")
+            .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+            .setConfirmationRequired(true)
+            .setNegativeButtonText("Cancel")
+            .build()
+        biometricPrompt.authenticate(promptInfo)
     }
 }
 
@@ -50,7 +125,8 @@ class MainActivity : ComponentActivity() {
 fun PendingRequestsScreen(
     state: AuthViewModel.UiState,
     onRefresh: () -> Unit,
-    onDecide: (String, Boolean) -> Unit
+    onApprove: (AuthRequest) -> Unit,
+    onDeny: (AuthRequest) -> Unit
 ) {
     Scaffold(
         topBar = { TopAppBar(title = { Text("Universal Auth") }) }
@@ -70,7 +146,11 @@ fun PendingRequestsScreen(
             if (!state.loading && state.requests.isEmpty()) Text("No pending requests")
             LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
                 items(state.requests) { request ->
-                    RequestCard(request, onDecide)
+                    RequestCard(
+                        request = request,
+                        onApprove = { onApprove(request) },
+                        onDeny = { onDeny(request) }
+                    )
                 }
             }
         }
@@ -78,7 +158,11 @@ fun PendingRequestsScreen(
 }
 
 @Composable
-fun RequestCard(request: AuthRequest, onDecide: (String, Boolean) -> Unit) {
+fun RequestCard(
+    request: AuthRequest,
+    onApprove: () -> Unit,
+    onDeny: () -> Unit
+) {
     Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(request.source, style = MaterialTheme.typography.titleMedium)
@@ -90,8 +174,8 @@ fun RequestCard(request: AuthRequest, onDecide: (String, Boolean) -> Unit) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Button(onClick = { onDecide(request.id, false) }) { Text("Deny") }
-                Button(onClick = { onDecide(request.id, true) }) { Text("Approve") }
+                Button(onClick = onDeny) { Text("Deny") }
+                Button(onClick = onApprove) { Text("Approve") }
             }
         }
     }
