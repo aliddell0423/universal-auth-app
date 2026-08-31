@@ -2,6 +2,7 @@ package com.aliddell.universalauth.crypto
 
 import com.aliddell.universalauth.data.ReleaseRequest
 import com.aliddell.universalauth.data.ReleaseResponse
+import com.aliddell.universalauth.data.ReleaseStage
 import java.nio.charset.StandardCharsets
 import java.security.KeyFactory
 import java.security.KeyPair
@@ -43,8 +44,10 @@ object SecureRelease {
         pinnedDesktopId: String,
         pinnedDesktopPublic: ByteArray,
         pinnedPixelVaultKeyId: String,
-        vaultKeyManager: VaultKeyManager
+        vaultKeyManager: VaultKeyManager,
+        onStage: (ReleaseStage) -> Unit = {}
     ): ReleaseResponse {
+        onStage(ReleaseStage.VALIDATING_REQUEST)
         if (release.protocol != "universal-auth:secure-release:v1") {
             throw SecurityException("unsupported protocol")
         }
@@ -54,6 +57,7 @@ object SecureRelease {
         if (release.desktopId != pinnedDesktopId) {
             throw SecurityException("desktop not trusted")
         }
+        onStage(ReleaseStage.VERIFYING_DESKTOP)
 
         val pkg = parsePackage(release.credentialPackage)
         if (pkg.cryptoVersion != 2) {
@@ -66,6 +70,7 @@ object SecureRelease {
         if (pkg.pixelVaultKeyId != pinnedPixelVaultKeyId) {
             throw SecurityException("pixel vault key id mismatch")
         }
+        onStage(ReleaseStage.VERIFYING_PACKAGE)
 
         val desktopPublic = decodeP256PublicKey(pinnedDesktopPublic)
         val signedPayload = canonicalReleaseRequest(
@@ -84,6 +89,7 @@ object SecureRelease {
         val wrapPublic = decodeP256PublicKey(pkg.wrapEphemeralPublic)
         val desktopReleasePublic = decodeP256PublicKey(Base64.getUrlDecoder().decode(release.desktopEphemeralPublic))
 
+        onStage(ReleaseStage.UNLOCKING_VAULT_KEY)
         val agreement = vaultKeyManager.createKeyAgreement()
         agreement.doPhase(wrapPublic, true)
         val shared = agreement.generateSecret()
@@ -94,11 +100,13 @@ object SecureRelease {
             "universal-auth:vault-wrap-key:v2".toByteArray(StandardCharsets.US_ASCII), 32
         )
 
+        onStage(ReleaseStage.UNWRAPPING_DEK)
         val dek = aesGcmDecrypt(wrapKey, pkg.wrappedDek, pkg.wrapNonce, wrapAAD(pkg))
         if (dek.size != 32) {
             throw SecurityException("dek length is ${dek.size}, want 32")
         }
 
+        onStage(ReleaseStage.PREPARING_TRANSFER)
         val responseKeyPair = generateResponseKeyPair()
         val responseAgreement = KeyAgreement.getInstance("ECDH")
         responseAgreement.init(responseKeyPair.private)
@@ -123,6 +131,7 @@ object SecureRelease {
         )
         val encryptedDek = aesGcmEncrypt(transferKey, dek, transferNonce, aad)
 
+        onStage(ReleaseStage.COMPLETE)
         return ReleaseResponse(
             protocol = "universal-auth:secure-release:v1",
             credentialId = pkg.credentialId,

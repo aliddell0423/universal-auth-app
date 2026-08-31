@@ -15,6 +15,7 @@ data class AuthRequest(
     val status: String,
     @SerialName("created_at") val createdAt: String,
     @SerialName("decided_at") val decidedAt: String? = null,
+    @SerialName("trace_id") val traceId: String? = null,
     @SerialName("release_request") val releaseRequest: ReleaseRequest? = null,
     @SerialName("release_response") val releaseResponse: ReleaseResponse? = null
 )

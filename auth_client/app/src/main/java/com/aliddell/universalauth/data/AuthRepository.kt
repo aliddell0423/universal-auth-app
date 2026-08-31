@@ -58,13 +58,33 @@ class DefaultAuthRepository(
     }
     private val mediaType = "application/json".toMediaType()
 
+    private fun handleError(responseCode: Int, bodyString: String, defaultStage: String): Nothing {
+        val apiError = try {
+            json.decodeFromString<ApiError>(bodyString)
+        } catch (_: Exception) {
+            null
+        }
+        if (apiError != null) {
+            throw ApiException(apiError)
+        }
+        throw ApiException(
+            ApiError(
+                code = "UA-ANDROID-001",
+                stage = defaultStage,
+                message = "Request failed (HTTP $responseCode).",
+                retryable = false,
+                action = "Check the service and try again."
+            )
+        )
+    }
+
     override suspend fun checkHealth(): Result<String> = withContext(Dispatchers.IO) {
         val request = Request.Builder().url("$baseUrl/healthz").build()
         runCatching {
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    val body = response.body.string().take(200)
-                    throw Exception("HTTP ${response.code}: $body")
+                    val body = response.body.string()
+                    handleError(response.code, body, "broker.healthz")
                 }
                 response.body.string()
             }
@@ -79,8 +99,8 @@ class DefaultAuthRepository(
         runCatching {
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    val body = response.body.string().take(200)
-                    throw Exception("HTTP ${response.code}: $body")
+                    val body = response.body.string()
+                    handleError(response.code, body, "broker.list_pending")
                 }
                 val body = response.body.string()
                 json.decodeFromString<List<AuthRequest>>(body)
@@ -102,8 +122,8 @@ class DefaultAuthRepository(
         runCatching {
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    val body = response.body.string().take(200)
-                    throw Exception("HTTP ${response.code}: $body")
+                    val body = response.body.string()
+                    handleError(response.code, body, "broker.register_device")
                 }
             }
         }
@@ -117,8 +137,8 @@ class DefaultAuthRepository(
         runCatching {
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    val body = response.body.string().take(200)
-                    throw Exception("HTTP ${response.code}: $body")
+                    val body = response.body.string()
+                    handleError(response.code, body, "broker.trusted_desktop")
                 }
                 val body = response.body.string()
                 json.decodeFromString<TrustedDesktop>(body)
@@ -142,8 +162,8 @@ class DefaultAuthRepository(
         runCatching {
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    val body = response.body.string().take(200)
-                    throw Exception("HTTP ${response.code}: $body")
+                    val body = response.body.string()
+                    handleError(response.code, body, "broker.decision")
                 }
                 val responseBody = response.body.string()
                 json.decodeFromString<AuthRequest>(responseBody)
@@ -166,8 +186,8 @@ class DefaultAuthRepository(
         runCatching {
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    val body = response.body.string().take(200)
-                    throw Exception("HTTP ${response.code}: $body")
+                    val body = response.body.string()
+                    handleError(response.code, body, "broker.attach_release_response")
                 }
                 val responseBody = response.body.string()
                 json.decodeFromString<AuthRequest>(responseBody)
@@ -187,8 +207,8 @@ class DefaultAuthRepository(
         runCatching {
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    val body = response.body.string().take(200)
-                    throw Exception("HTTP ${response.code}: $body")
+                    val body = response.body.string()
+                    handleError(response.code, body, "broker.decision")
                 }
                 val responseBody = response.body.string()
                 json.decodeFromString<AuthRequest>(responseBody)

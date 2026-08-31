@@ -1,0 +1,15 @@
+package com.aliddell.universalauth.data
+
+enum class ReleaseStage {
+    IDLE,
+    VALIDATING_REQUEST,
+    VERIFYING_DESKTOP,
+    VERIFYING_PACKAGE,
+    WAITING_FOR_BIOMETRIC,
+    UNLOCKING_VAULT_KEY,
+    UNWRAPPING_DEK,
+    PREPARING_TRANSFER,
+    SENDING_RESPONSE,
+    COMPLETE,
+    FAILED
+}

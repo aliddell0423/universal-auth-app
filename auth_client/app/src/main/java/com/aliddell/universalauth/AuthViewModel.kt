@@ -5,11 +5,15 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.aliddell.universalauth.crypto.SecureRelease
 import com.aliddell.universalauth.crypto.VaultKeyManager
+import com.aliddell.universalauth.data.ApiError
+import com.aliddell.universalauth.data.ApiException
 import com.aliddell.universalauth.data.AuthRepository
 import com.aliddell.universalauth.data.AuthRequest
 import com.aliddell.universalauth.data.DeviceRegistrationWithVault
+import com.aliddell.universalauth.data.OperationError
 import com.aliddell.universalauth.data.ReleaseRequest
 import com.aliddell.universalauth.data.ReleaseResponse
+import com.aliddell.universalauth.data.ReleaseStage
 import com.aliddell.universalauth.data.TrustedDesktop
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -127,6 +131,10 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
         }
     }
 
+    fun setReleaseStage(stage: ReleaseStage) {
+        _uiState.value = _uiState.value.copy(releaseStage = stage)
+    }
+
     fun submitReleaseResponse(id: String, response: ReleaseResponse) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(loading = true, error = null)
@@ -148,11 +156,17 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
         onResult: (String) -> Unit
     ) {
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(loading = true, error = null)
+            _uiState.value = _uiState.value.copy(
+                loading = true,
+                error = null,
+                releaseStage = ReleaseStage.VALIDATING_REQUEST,
+                releaseError = null
+            )
             val trusted = _uiState.value.trustedDesktop
             if (trusted == null) {
-                _uiState.value = _uiState.value.copy(loading = false, error = "No trusted desktop registered")
-                onResult("No trusted desktop registered")
+                val err = operationError(request, "UA-BROKER-002", "broker.trusted_desktop", "No trusted desktop registered", "Run 'authctl desktop-register'.", false)
+                _uiState.value = _uiState.value.copy(loading = false, releaseStage = ReleaseStage.FAILED, releaseError = err)
+                onResult(err.message)
                 return@launch
             }
             try {
@@ -167,25 +181,75 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
                         pinnedDesktopId = trusted.desktop_id,
                         pinnedDesktopPublic = desktopPublic,
                         pinnedPixelVaultKeyId = vaultKeyManager.keyId(),
-                        vaultKeyManager = vaultKeyManager
+                        vaultKeyManager = vaultKeyManager,
+                        onStage = { stage ->
+                            _uiState.value = _uiState.value.copy(releaseStage = stage)
+                        }
                     )
                 }
+                _uiState.value = _uiState.value.copy(releaseStage = ReleaseStage.SENDING_RESPONSE)
                 val result = repository.submitReleaseResponse(request.id, response)
                 if (result.isSuccess) {
-                    _uiState.value = _uiState.value.copy(loading = false, error = null)
+                    _uiState.value = _uiState.value.copy(loading = false, releaseStage = ReleaseStage.COMPLETE, releaseError = null)
                     onResult("")
                     refresh()
                 } else {
-                    val msg = result.exceptionOrNull()?.message ?: "Release response failed"
-                    _uiState.value = _uiState.value.copy(loading = false, error = msg)
-                    onResult(msg)
+                    val ex = result.exceptionOrNull()
+                    val err = toOperationError(ex, request, "broker.attach_release_response")
+                    _uiState.value = _uiState.value.copy(loading = false, releaseStage = ReleaseStage.FAILED, releaseError = err)
+                    onResult(err.message)
                 }
+            } catch (e: ApiException) {
+                val err = toOperationError(e, request, e.apiError.stage)
+                _uiState.value = _uiState.value.copy(loading = false, releaseStage = ReleaseStage.FAILED, releaseError = err)
+                onResult(err.message)
             } catch (e: Exception) {
-                val msg = e.message ?: e.javaClass.simpleName
-                _uiState.value = _uiState.value.copy(loading = false, error = msg)
-                onResult(msg)
+                val code = if (e is java.lang.SecurityException) "UA-ANDROID-010" else "UA-ANDROID-001"
+                val err = operationError(request, code, "release.process", e.message ?: e.javaClass.simpleName, "Check the request and try again.", false)
+                _uiState.value = _uiState.value.copy(loading = false, releaseStage = ReleaseStage.FAILED, releaseError = err)
+                onResult(err.message)
             }
         }
+    }
+
+    private fun toOperationError(throwable: Throwable?, request: AuthRequest, fallbackStage: String): OperationError {
+        return when (throwable) {
+            is ApiException -> operationError(
+                request = request,
+                code = throwable.apiError.code,
+                stage = throwable.apiError.stage.ifEmpty { fallbackStage },
+                message = throwable.apiError.message,
+                action = throwable.apiError.action,
+                retryable = throwable.apiError.retryable
+            )
+            else -> operationError(
+                request = request,
+                code = "UA-ANDROID-001",
+                stage = fallbackStage,
+                message = throwable?.message ?: "Release failed",
+                action = "Check the request and try again.",
+                retryable = false
+            )
+        }
+    }
+
+    private fun operationError(
+        request: AuthRequest,
+        code: String,
+        stage: String,
+        message: String,
+        action: String,
+        retryable: Boolean
+    ): OperationError {
+        return OperationError(
+            code = code,
+            stage = stage,
+            message = message,
+            traceId = request.traceId,
+            requestId = request.id,
+            retryable = retryable,
+            action = action
+        )
     }
 
     data class UiState(
@@ -194,7 +258,9 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
         val deviceRegistered: Boolean = false,
         val requests: List<AuthRequest> = emptyList(),
         val trustedDesktop: TrustedDesktop? = null,
-        val error: String? = null
+        val error: String? = null,
+        val releaseStage: ReleaseStage = ReleaseStage.IDLE,
+        val releaseError: OperationError? = null
     )
 
     class Factory(private val repository: AuthRepository) : ViewModelProvider.Factory {

@@ -37,6 +37,7 @@ import com.aliddell.universalauth.crypto.VaultKeyManager
 import com.aliddell.universalauth.crypto.buildSigningPayload
 import com.aliddell.universalauth.data.AuthRequest
 import com.aliddell.universalauth.data.DefaultAuthRepository
+import com.aliddell.universalauth.data.ReleaseStage
 import java.security.Signature
 import java.util.Base64
 
@@ -189,6 +190,7 @@ class MainActivity : FragmentActivity() {
                 Toast.makeText(this, "No trusted desktop registered", Toast.LENGTH_LONG).show()
                 return
             }
+            authViewModel.setReleaseStage(ReleaseStage.WAITING_FOR_BIOMETRIC)
             pendingBiometricRequest = request
             val promptInfo = BiometricPrompt.PromptInfo.Builder()
                 .setTitle("Release credential")
@@ -250,6 +252,19 @@ fun PendingRequestsScreen(
             state.error?.let { Text("Error: $it", color = MaterialTheme.colorScheme.error) }
             if (state.loading) CircularProgressIndicator()
             if (!state.loading && state.requests.isEmpty()) Text("No pending requests")
+            if (state.releaseStage != ReleaseStage.IDLE) {
+                Text("Stage: ${state.releaseStage}")
+            }
+            state.releaseError?.let { err ->
+                Text("${err.code}", color = MaterialTheme.colorScheme.error)
+                Text("${err.stage}")
+                Text(err.message, color = MaterialTheme.colorScheme.error)
+                Text("Request: ${err.requestId ?: "-"}")
+                Text("Trace: ${err.traceId ?: "-"}")
+                if (err.action.isNotEmpty()) {
+                    Text("Action: ${err.action}")
+                }
+            }
             LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
                 items(state.requests) { request ->
                     RequestCard(
