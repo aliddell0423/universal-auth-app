@@ -21,7 +21,7 @@ import (
 var (
 	ErrNotFound           = errors.New("credential not found")
 	ErrIncompatibleSchema = errors.New("UA-VAULT-001: vault database schema is incompatible with this version; run 'authctl doctor' for repair instructions")
-	currentSchemaVersion  = 1
+	currentSchemaVersion  = 2
 	requiredColumns       = []string{
 		"id", "origin", "ciphertext", "cipher_nonce", "wrapped_dek",
 		"wrap_nonce", "wrap_ephemeral_public_key", "pixel_vault_key_id",
@@ -61,25 +61,77 @@ func (d *DB) Ready() error {
 	if err := d.db.Ping(); err != nil {
 		return err
 	}
+	v, err := schemaVersion(d.db)
+	if err != nil {
+		return err
+	}
+	if v != currentSchemaVersion {
+		return ErrIncompatibleSchema
+	}
 	return validateSchema(d.db)
 }
 
 func applyMigrations(db *sql.DB) (bool, error) {
-	var version int
-	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version INTEGER PRIMARY KEY,
+			applied_at TEXT NOT NULL
+		)
+	`); err != nil {
 		return false, err
 	}
-	if version >= currentSchemaVersion {
+
+	applied, err := appliedVersions(db)
+	if err != nil {
+		return false, err
+	}
+	if applied[currentSchemaVersion] {
 		return false, nil
 	}
 
+	// No schema_migrations record for version 2. Fall back to PRAGMA user_version.
+	var userVer int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&userVer); err != nil {
+		return false, err
+	}
+	if userVer == currentSchemaVersion {
+		// Database already current but not tracked; record it.
+		if err := recordMigration(db, currentSchemaVersion); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	if userVer > currentSchemaVersion {
+		return true, nil
+	}
+	if userVer == 1 {
+		// Old-style v2 storage that set PRAGMA user_version to 1. Verify the
+		// table has the expected columns; if so, it is the current schema.
+		columns, err := getColumns(db, "credentials")
+		if err != nil {
+			return false, err
+		}
+		if hasAll(columns, requiredColumns) {
+			if err := recordMigration(db, currentSchemaVersion); err != nil {
+				return false, err
+			}
+			_, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", currentSchemaVersion))
+			return false, err
+		}
+		return handleLegacy(db)
+	}
+	// userVer == 0 or unknown: legacy or fresh database.
+	return handleLegacy(db)
+}
+
+func handleLegacy(db *sql.DB) (bool, error) {
 	var n int
 	err := db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='credentials'").Scan(&n)
 	if err != nil {
 		return false, err
 	}
 	if n == 0 {
-		return false, createSchema(db)
+		return createCurrentSchema(db)
 	}
 
 	columns, err := getColumns(db, "credentials")
@@ -87,6 +139,10 @@ func applyMigrations(db *sql.DB) (bool, error) {
 		return false, err
 	}
 	if hasAll(columns, requiredColumns) {
+		// Table already current; just record it.
+		if err := recordMigration(db, currentSchemaVersion); err != nil {
+			return false, err
+		}
 		_, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", currentSchemaVersion))
 		return false, err
 	}
@@ -99,14 +155,14 @@ func applyMigrations(db *sql.DB) (bool, error) {
 		if _, err := db.Exec("DROP TABLE credentials"); err != nil {
 			return false, err
 		}
-		return false, createSchema(db)
+		return createCurrentSchema(db)
 	}
 
-	// Non-empty legacy database that cannot be safely migrated. Leave it untouched.
+	// Non-empty legacy database that cannot be safely migrated.
 	return true, nil
 }
 
-func createSchema(db *sql.DB) error {
+func createCurrentSchema(db *sql.DB) (bool, error) {
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS credentials (
 			id TEXT PRIMARY KEY,
@@ -123,10 +179,64 @@ func createSchema(db *sql.DB) error {
 		);
 	`)
 	if err != nil {
-		return err
+		return false, err
+	}
+	if err := recordMigration(db, currentSchemaVersion); err != nil {
+		return false, err
 	}
 	_, err = db.Exec(fmt.Sprintf("PRAGMA user_version = %d", currentSchemaVersion))
+	return false, err
+}
+
+func recordMigration(db *sql.DB, version int) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := db.Exec("INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES (?, ?)", version, now)
 	return err
+}
+
+func appliedVersions(db *sql.DB) (map[int]bool, error) {
+	var n int
+	if err := db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='schema_migrations'").Scan(&n); err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return nil, nil
+	}
+	rows, err := db.Query("SELECT version FROM schema_migrations")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[int]bool)
+	for rows.Next() {
+		var v int
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		out[v] = true
+	}
+	return out, rows.Err()
+}
+
+func schemaVersion(db *sql.DB) (int, error) {
+	applied, err := appliedVersions(db)
+	if err != nil {
+		return 0, err
+	}
+	if len(applied) > 0 {
+		max := 0
+		for v := range applied {
+			if v > max {
+				max = v
+			}
+		}
+		return max, nil
+	}
+	var v int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
+		return 0, err
+	}
+	return v, nil
 }
 
 func validateSchema(db *sql.DB) error {

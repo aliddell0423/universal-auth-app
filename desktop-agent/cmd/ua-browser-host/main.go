@@ -139,7 +139,7 @@ func handle(req inMessage) outMessage {
 
 	ctx, cancel = context.WithTimeout(context.Background(), defaultReleaseTimeout)
 	defer cancel()
-	pt, err := release.SecureRelease(ctx, req.Origin, pkg, ident, cfg.TrustedDevice.VaultKeyID, brokerClient, traceID, defaultReleaseTimeout, defaultPoll)
+	result, err := release.SecureRelease(ctx, req.Origin, pkg, ident, cfg.TrustedDevice.VaultKeyID, brokerClient, traceID, defaultReleaseTimeout, defaultPoll)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] secure release: %v\n", traceID, err)
 		if err.Error() == "denied" {
@@ -151,10 +151,11 @@ func handle(req inMessage) outMessage {
 		return fromError(traceID, err)
 	}
 	return outMessage{
-		Status:   "approved",
-		Username: pt.Username,
-		Password: pt.Password,
-		TraceID:  traceID,
+		Status:    "approved",
+		Username:  result.Username,
+		Password:  result.Password,
+		TraceID:   result.TraceID,
+		RequestID: result.RequestID,
 	}
 }
 

@@ -120,12 +120,12 @@ func TestReleaseRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	pt, err := SecureRelease(ctx, "https://github.com", pkg, ident, pixelVaultID, bc, "test-trace", 5*time.Second, 50*time.Millisecond)
+	result, err := SecureRelease(ctx, "https://github.com", pkg, ident, pixelVaultID, bc, "test-trace", 5*time.Second, 50*time.Millisecond)
 	if err != nil {
 		t.Fatalf("secure release failed: %v", err)
 	}
-	if pt.Username != "tester" || pt.Password != "hunter2" {
-		t.Fatalf("unexpected plaintext: %+v", pt)
+	if result.Username != "tester" || result.Password != "hunter2" {
+		t.Fatalf("unexpected plaintext: user=%s pass=%s", result.Username, result.Password)
 	}
 }
 

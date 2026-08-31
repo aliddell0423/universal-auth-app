@@ -55,6 +55,7 @@ type Request struct {
 	Message         string           `json:"message"`
 	Challenge       string           `json:"challenge"`
 	ClientNonce     string           `json:"client_nonce"`
+	TraceID         string           `json:"trace_id,omitempty"`
 	Status          RequestStatus    `json:"status"`
 	CreatedAt       time.Time        `json:"created_at"`
 	DecidedAt       *time.Time       `json:"decided_at,omitempty"`
@@ -119,7 +120,7 @@ func NewStore() *Store {
 	return &Store{reqs: make(map[string]*Request)}
 }
 
-func (s *Store) Create(c CreateRequest) (*Request, error) {
+func (s *Store) Create(c CreateRequest, traceID string) (*Request, error) {
 	if c.ClientNonce == "" {
 		return nil, ErrMissingClientNonce
 	}
@@ -140,6 +141,7 @@ func (s *Store) Create(c CreateRequest) (*Request, error) {
 		Message:     c.Message,
 		Challenge:   challenge,
 		ClientNonce: c.ClientNonce,
+		TraceID:     traceID,
 		Status:      StatusPending,
 		CreatedAt:   now,
 	}

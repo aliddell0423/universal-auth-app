@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -113,6 +114,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, pkg)
+	log.Printf("[trace=%s] package stored id=%s origin=%s", traceID(r), pkg.CredentialID, pkg.Origin)
 }
 
 func (s *Server) handleExists(w http.ResponseWriter, r *http.Request) {
@@ -131,6 +133,7 @@ func (s *Server) handleExists(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"exists": exists})
+	log.Printf("[trace=%s] exists checked origin=%s exists=%v", traceID(r), origin, exists)
 }
 
 func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request) {
@@ -153,6 +156,7 @@ func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, pkg)
+	log.Printf("[trace=%s] package fetched origin=%s", traceID(r), pkg.Origin)
 }
 
 func (s *Server) handleCredentialByID(w http.ResponseWriter, r *http.Request) {
@@ -174,6 +178,7 @@ func (s *Server) handleCredentialByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+	log.Printf("[trace=%s] package deleted id=%s", traceID(r), id)
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
@@ -188,6 +193,10 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 		return errors.New("trailing data in request body")
 	}
 	return nil
+}
+
+func traceID(r *http.Request) string {
+	return r.Header.Get("X-Universal-Auth-Trace-ID")
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -25,13 +25,15 @@ const (
 )
 
 type Result struct {
-	Status   string
-	Username string
-	Password string
-	Error    error
+	Status    string
+	Username  string
+	Password  string
+	Error     error
+	RequestID string
+	TraceID   string
 }
 
-// SecureRelease performs the full v2 secure release and returns the credential plaintext.
+// SecureRelease performs the full v2 secure release and returns the credential and transaction IDs.
 func SecureRelease(
 	ctx context.Context,
 	origin string,
@@ -41,7 +43,7 @@ func SecureRelease(
 	brokerClient *broker.Client,
 	traceID string,
 	timeout, poll time.Duration,
-) (*vaultcrypto.CredentialPlaintext, error) {
+) (*Result, error) {
 	if pkg.CryptoVersion != vaultcrypto.CryptoVersion {
 		return nil, fmt.Errorf("unsupported package crypto version %d", pkg.CryptoVersion)
 	}
@@ -131,7 +133,20 @@ func SecureRelease(
 				if result.ReleaseResponse == nil {
 					return nil, fmt.Errorf("released but no response present")
 				}
-				return decryptReleaseResponse(pkg, result, releasePriv, ident.DesktopID())
+				pt, err := decryptReleaseResponse(pkg, result, releasePriv, ident.DesktopID())
+				if err != nil {
+					return nil, err
+				}
+				requestTraceID := result.TraceID
+				if requestTraceID == "" {
+					requestTraceID = traceID
+				}
+				return &Result{
+					Username:  pt.Username,
+					Password:  pt.Password,
+					RequestID: result.ID,
+					TraceID:   requestTraceID,
+				}, nil
 			case StatusDenied:
 				return nil, fmt.Errorf("denied")
 			case StatusPending:

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -90,7 +91,8 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *Store) {
 		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.create_request", "missing required fields", "Provide source, kind, resource, message and client_nonce.", false)
 		return
 	}
-	req, err := store.Create(c)
+	traceID := r.Header.Get("X-Universal-Auth-Trace-ID")
+	req, err := store.Create(c, traceID)
 	if err != nil {
 		if errors.Is(err, ErrMissingClientNonce) {
 			writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.create_request", "client_nonce is required", "Provide a client_nonce.", false)
@@ -100,6 +102,7 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *Store) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, req)
+	log.Printf("[trace=%s] [request=%s] created status=pending", req.TraceID, req.ID)
 }
 
 func handleListPending(w http.ResponseWriter, r *http.Request, store *Store) {
@@ -148,6 +151,7 @@ func handleGet(w http.ResponseWriter, r *http.Request, store *Store, id string) 
 		return
 	}
 	writeJSON(w, http.StatusOK, req)
+	log.Printf("[trace=%s] [request=%s] get status=%s", req.TraceID, req.ID, req.Status)
 }
 
 func handleDecision(w http.ResponseWriter, r *http.Request, store *Store, id string) {
@@ -195,6 +199,7 @@ func handleDecision(w http.ResponseWriter, r *http.Request, store *Store, id str
 		return
 	}
 	writeJSON(w, http.StatusOK, req)
+	log.Printf("[trace=%s] [request=%s] decision=%s", req.TraceID, req.ID, req.Status)
 }
 
 func handleRegisterDevice(w http.ResponseWriter, r *http.Request, store *Store) {
@@ -392,6 +397,7 @@ func handleAttachReleaseRequest(w http.ResponseWriter, r *http.Request, store *S
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
+	log.Printf("[trace=%s] [request=%s] attached release_request", updated.TraceID, updated.ID)
 }
 
 func handleAttachReleaseResponse(w http.ResponseWriter, r *http.Request, store *Store, id string) {
@@ -422,6 +428,7 @@ func handleAttachReleaseResponse(w http.ResponseWriter, r *http.Request, store *
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
+	log.Printf("[trace=%s] [request=%s] attached release_response status=%s", updated.TraceID, updated.ID, updated.Status)
 }
 
 func parseP256PublicKey(b64 string) (*ecdsa.PublicKey, error) {

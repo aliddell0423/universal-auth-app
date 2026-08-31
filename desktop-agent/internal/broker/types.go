@@ -18,6 +18,7 @@ type Request struct {
 	Message         string           `json:"message"`
 	Challenge       string           `json:"challenge"`
 	ClientNonce     string           `json:"client_nonce"`
+	TraceID         string           `json:"trace_id,omitempty"`
 	Status          string           `json:"status"`
 	CreatedAt       time.Time        `json:"created_at"`
 	DecidedAt       *time.Time       `json:"decided_at,omitempty"`
