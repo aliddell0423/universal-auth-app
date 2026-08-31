@@ -85,17 +85,23 @@ func pair(args []string) {
 		os.Exit(exitSecurityFailure)
 	}
 
-	cfg := &config.Config{
-		BrokerURL: *brokerURL,
-		TrustedDevice: config.TrustedDevice{
-			DeviceID:    td.DeviceID,
-			Name:        td.Name,
-			Algorithm:   td.Algorithm,
-			PublicKey:   td.PublicKey,
-			VaultKeyID:  td.VaultKeyID,
-			VaultAlgo:   td.VaultAlgorithm,
-			VaultPubKey: td.VaultPublicKey,
-		},
+	cfg, err := config.Load(config.DefaultPath())
+	if err != nil {
+		if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "error: load existing config: %v\n", err)
+			os.Exit(exitError)
+		}
+		cfg = &config.Config{}
+	}
+	cfg.BrokerURL = *brokerURL
+	cfg.TrustedDevice = config.TrustedDevice{
+		DeviceID:    td.DeviceID,
+		Name:        td.Name,
+		Algorithm:   td.Algorithm,
+		PublicKey:   td.PublicKey,
+		VaultKeyID:  td.VaultKeyID,
+		VaultAlgo:   td.VaultAlgorithm,
+		VaultPubKey: td.VaultPublicKey,
 	}
 	if err := cfg.Save(config.DefaultPath()); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

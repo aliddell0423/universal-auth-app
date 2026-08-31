@@ -100,7 +100,7 @@ func (c *Client) RegisterDesktop(ctx context.Context, td TrustedDesktop, traceID
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusConflict {
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
 		return nil
 	}
 	return apierror.FromResponse(resp, "broker.desktop_register", "UA-BROKER-005")

@@ -41,7 +41,7 @@ func FromResponse(resp *http.Response, stage, fallbackCode string) *Error {
 	return &Error{
 		Code:       fallbackCode,
 		Stage:      stage,
-		Message:    fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(body)),
+		Message:    "Request failed.",
 		Retryable:  false,
 		Action:     "Check service logs and run 'authctl doctor'.",
 		StatusCode: resp.StatusCode,

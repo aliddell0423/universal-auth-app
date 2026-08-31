@@ -1,4 +1,12 @@
+const notificationDedupe = new Map();
+const NOTIFICATION_TTL_MS = 30000;
+
 browser.runtime.onMessage.addListener((message, sender) => {
+  if (message.type === 'show_notification') {
+    showNotification(message);
+    return;
+  }
+
   if (message.type !== 'credential_request') {
     return;
   }
@@ -37,3 +45,28 @@ browser.runtime.onMessage.addListener((message, sender) => {
       };
     });
 });
+
+function showNotification(message) {
+  const now = Date.now();
+  const key = `${message.code || 'unknown'}-${message.origin || 'unknown'}`;
+  const last = notificationDedupe.get(key);
+  if (last && now - last < NOTIFICATION_TTL_MS) {
+    return;
+  }
+  notificationDedupe.set(key, now);
+
+  // Evict old entries.
+  for (const [k, v] of notificationDedupe.entries()) {
+    if (now - v > NOTIFICATION_TTL_MS) {
+      notificationDedupe.delete(k);
+    }
+  }
+
+  if (typeof browser !== 'undefined' && browser.notifications) {
+    browser.notifications.create({
+      type: 'basic',
+      title: 'Universal Auth failed',
+      message: `${message.code || 'unknown'}: ${message.error || 'Unknown error'}`,
+    });
+  }
+}

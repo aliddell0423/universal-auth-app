@@ -107,9 +107,9 @@ ssh "${SSH_OPTS[@]}" "$TARGET" '
         vault-service:dev
 '
 
-echo "==> Waiting for health checks"
+echo "==> Waiting for readiness checks"
 BROKER_HEALTH="http://$AUTH_DEV_HOST:8080/healthz"
-VAULT_HEALTH="http://$AUTH_DEV_HOST:8081/healthz"
+VAULT_HEALTH="http://$AUTH_DEV_HOST:8081/readyz"
 
 for i in {1..15}; do
     BROKER_OK=false

@@ -113,7 +113,7 @@ func handle(req inMessage) outMessage {
 		return fromError(traceID, err)
 	}
 	if !exists {
-		return fail(traceID, "UA-VAULT-002", "vault.exists", "No saved credential for this origin.", "Use 'vaultctl add' to store one.", false)
+		return outcome("not_found", traceID, "UA-VAULT-002", "vault.exists", "No saved credential for this origin.", "Use 'vaultctl add' to store one.", false)
 	}
 
 	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
@@ -143,10 +143,10 @@ func handle(req inMessage) outMessage {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] secure release: %v\n", traceID, err)
 		if err.Error() == "denied" {
-			return fail(traceID, "UA-RELEASE-003", "release.denied", "Credential release was denied on the Pixel.", "", false)
+			return outcome("denied", traceID, "UA-RELEASE-003", "release.denied", "Credential release was denied on the Pixel.", "", false)
 		}
 		if err.Error() == "timeout" {
-			return fail(traceID, "UA-RELEASE-002", "release.timeout", "Credential release timed out waiting for Pixel approval.", "Try again.", true)
+			return outcome("timeout", traceID, "UA-RELEASE-002", "release.timeout", "Credential release timed out waiting for Pixel approval.", "Try again.", true)
 		}
 		return fromError(traceID, err)
 	}
@@ -182,12 +182,16 @@ func diagnose(traceID string) outMessage {
 func fromError(traceID string, err error) outMessage {
 	var apiErr *apierror.Error
 	if errors.As(err, &apiErr) {
+		effectiveTraceID := apiErr.TraceID
+		if effectiveTraceID == "" {
+			effectiveTraceID = traceID
+		}
 		return outMessage{
 			Status:    "error",
 			Code:      apiErr.Code,
 			Stage:     apiErr.Stage,
 			Error:     apiErr.Message,
-			TraceID:   apiErr.TraceID,
+			TraceID:   effectiveTraceID,
 			RequestID: apiErr.RequestID,
 			Retryable: apiErr.Retryable,
 			Action:    apiErr.Action,
@@ -199,6 +203,18 @@ func fromError(traceID string, err error) outMessage {
 func fail(traceID, code, stage, msg, action string, retryable bool) outMessage {
 	return outMessage{
 		Status:    "error",
+		Code:      code,
+		Stage:     stage,
+		Error:     msg,
+		TraceID:   traceID,
+		Retryable: retryable,
+		Action:    action,
+	}
+}
+
+func outcome(status, traceID, code, stage, msg, action string, retryable bool) outMessage {
+	return outMessage{
+		Status:    status,
 		Code:      code,
 		Stage:     stage,
 		Error:     msg,

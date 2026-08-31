@@ -11,6 +11,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"auth-broker/internal/model"
 )
 
 const (
@@ -68,7 +70,7 @@ func newServer(store *Store, token string) http.Handler {
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeApiError(w, http.StatusMethodNotAllowed, "UA-BROKER-007", "broker.healthz", "method not allowed", "Use GET.", false)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -76,24 +78,24 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func handleCreate(w http.ResponseWriter, r *http.Request, store *Store) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeApiError(w, http.StatusMethodNotAllowed, "UA-BROKER-007", "broker.create_request", "method not allowed", "Use POST.", false)
 		return
 	}
 	var c CreateRequest
 	if err := decodeJSON(w, r, &c); err != nil {
-		writeError(w, http.StatusBadRequest, "malformed or invalid JSON")
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.create_request", "malformed or invalid JSON", "Check the request body.", false)
 		return
 	}
 	if c.Source == "" || c.Kind == "" || c.Resource == "" || c.Message == "" || c.ClientNonce == "" {
-		writeError(w, http.StatusBadRequest, "missing required fields")
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.create_request", "missing required fields", "Provide source, kind, resource, message and client_nonce.", false)
 		return
 	}
 	req, err := store.Create(c)
 	if err != nil {
 		if errors.Is(err, ErrMissingClientNonce) {
-			writeError(w, http.StatusBadRequest, "client_nonce is required")
+			writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.create_request", "client_nonce is required", "Provide a client_nonce.", false)
 		} else {
-			writeError(w, http.StatusInternalServerError, "internal error")
+			writeApiError(w, http.StatusInternalServerError, "UA-BROKER-005", "broker.create_request", "Failed to create request.", "Check the broker logs.", false)
 		}
 		return
 	}
@@ -102,7 +104,7 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *Store) {
 
 func handleListPending(w http.ResponseWriter, r *http.Request, store *Store) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeApiError(w, http.StatusMethodNotAllowed, "UA-BROKER-007", "broker.list_pending", "method not allowed", "Use GET.", false)
 		return
 	}
 	writeJSON(w, http.StatusOK, store.ListPending())
@@ -111,7 +113,7 @@ func handleListPending(w http.ResponseWriter, r *http.Request, store *Store) {
 func handleRequestByID(w http.ResponseWriter, r *http.Request, store *Store) {
 	suffix := strings.TrimPrefix(r.URL.Path, "/v1/requests/")
 	if suffix == "" || strings.HasSuffix(suffix, "/") {
-		writeError(w, http.StatusNotFound, "request not found")
+		writeApiError(w, http.StatusNotFound, "UA-BROKER-003", "broker.request", "request not found", "Provide a valid request ID.", false)
 		return
 	}
 	parts := strings.Split(suffix, "/")
@@ -132,17 +134,17 @@ func handleRequestByID(w http.ResponseWriter, r *http.Request, store *Store) {
 			return
 		}
 	}
-	writeError(w, http.StatusNotFound, "request not found")
+	writeApiError(w, http.StatusNotFound, "UA-BROKER-003", "broker.request", "request not found", "Provide a valid request ID.", false)
 }
 
 func handleGet(w http.ResponseWriter, r *http.Request, store *Store, id string) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeApiError(w, http.StatusMethodNotAllowed, "UA-BROKER-007", "broker.request_fetch", "method not allowed", "Use GET.", false)
 		return
 	}
 	req, ok := store.Get(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "request not found")
+		writeApiError(w, http.StatusNotFound, "UA-BROKER-003", "broker.request_fetch", "request not found", "The request may have expired.", false)
 		return
 	}
 	writeJSON(w, http.StatusOK, req)
@@ -150,16 +152,16 @@ func handleGet(w http.ResponseWriter, r *http.Request, store *Store, id string) 
 
 func handleDecision(w http.ResponseWriter, r *http.Request, store *Store, id string) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeApiError(w, http.StatusMethodNotAllowed, "UA-BROKER-007", "broker.decision", "method not allowed", "Use POST.", false)
 		return
 	}
 	var d Decision
 	if err := decodeJSON(w, r, &d); err != nil {
-		writeError(w, http.StatusBadRequest, "malformed or invalid JSON")
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.decision", "malformed or invalid JSON", "Check the request body.", false)
 		return
 	}
 	if d.Decision != "approved" && d.Decision != "denied" {
-		writeError(w, http.StatusBadRequest, "invalid decision value")
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.decision", "invalid decision value", "Use 'approved' or 'denied'.", false)
 		return
 	}
 
@@ -176,19 +178,19 @@ func handleDecision(w http.ResponseWriter, r *http.Request, store *Store, id str
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrRequestNotFound):
-			writeError(w, http.StatusNotFound, "request not found")
+			writeApiError(w, http.StatusNotFound, "UA-BROKER-003", "broker.decision", "request not found", "The request may have expired.", false)
 		case errors.Is(err, ErrInvalidDecision):
-			writeError(w, http.StatusBadRequest, "invalid decision value")
+			writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.decision", "invalid decision for this request kind", "Check the request kind.", false)
 		case errors.Is(err, ErrRequestAlreadyDecided):
-			writeError(w, http.StatusConflict, "request already decided")
+			writeApiError(w, http.StatusConflict, "UA-BROKER-006", "broker.decision", "request already decided", "This request has already been processed.", false)
 		case errors.Is(err, ErrDeviceNotFound):
-			writeError(w, http.StatusForbidden, "device not registered")
+			writeApiError(w, http.StatusForbidden, "UA-BROKER-001", "broker.decision", "device not registered", "Run 'authctl pair'.", false)
 		case errors.Is(err, ErrDeviceMismatch):
-			writeError(w, http.StatusForbidden, "device id does not match the trusted device")
+			writeApiError(w, http.StatusForbidden, "UA-BROKER-001", "broker.decision", "device id does not match the trusted device", "Run 'authctl pair'.", false)
 		case errors.Is(err, ErrInvalidSignature):
-			writeError(w, http.StatusForbidden, "invalid signature")
+			writeApiError(w, http.StatusForbidden, "UA-CRYPTO-002", "broker.decision", "invalid signature", "Ensure the Pixel signed the correct payload.", false)
 		default:
-			writeError(w, http.StatusInternalServerError, "internal error")
+			writeApiError(w, http.StatusInternalServerError, "UA-BROKER-005", "broker.decision", "Failed to record decision.", "Check the broker logs.", false)
 		}
 		return
 	}
@@ -197,47 +199,47 @@ func handleDecision(w http.ResponseWriter, r *http.Request, store *Store, id str
 
 func handleRegisterDevice(w http.ResponseWriter, r *http.Request, store *Store) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeApiError(w, http.StatusMethodNotAllowed, "UA-BROKER-007", "broker.register_device", "method not allowed", "Use POST.", false)
 		return
 	}
 	var reg DeviceRegistration
 	if err := decodeJSON(w, r, &reg); err != nil {
-		writeError(w, http.StatusBadRequest, "malformed or invalid JSON")
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.register_device", "malformed or invalid JSON", "Check the request body.", false)
 		return
 	}
 	if reg.Algorithm != "ECDSA_P256_SHA256" {
-		writeError(w, http.StatusBadRequest, "unsupported algorithm")
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.register_device", "unsupported algorithm", "Use ECDSA_P256_SHA256.", false)
 		return
 	}
 	if reg.DeviceID == "" || reg.Name == "" || reg.PublicKey == "" {
-		writeError(w, http.StatusBadRequest, "missing required fields")
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.register_device", "missing required fields", "Provide device_id, name and public_key.", false)
 		return
 	}
 
 	pub, err := parseP256PublicKey(reg.PublicKey)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.register_device", err.Error(), "Provide a valid P-256 ECDSA public key.", false)
 		return
 	}
 	if deviceID(pub) != reg.DeviceID {
-		writeError(w, http.StatusBadRequest, "device_id does not match public key")
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.register_device", "device_id does not match public key", "Verify the device fingerprint.", false)
 		return
 	}
 	if reg.VaultKeyID == "" || reg.VaultAlgorithm == "" || reg.VaultPublicKey == "" {
-		writeError(w, http.StatusBadRequest, "missing vault key fields")
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.register_device", "missing vault key fields", "Provide vault_key_id, vault_algorithm and vault_public_key.", false)
 		return
 	}
 	if reg.VaultAlgorithm != "ECDH_P256_HKDF_SHA256" {
-		writeError(w, http.StatusBadRequest, "unsupported vault algorithm")
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.register_device", "unsupported vault algorithm", "Use ECDH_P256_HKDF_SHA256.", false)
 		return
 	}
 	vaultPub, err := parseP256PublicKey(reg.VaultPublicKey)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "vault public key: "+err.Error())
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.register_device", "vault public key: "+err.Error(), "Provide a valid P-256 ECDSA public key.", false)
 		return
 	}
 	if deviceID(vaultPub) != reg.VaultKeyID {
-		writeError(w, http.StatusBadRequest, "vault_key_id does not match vault public key")
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.register_device", "vault_key_id does not match vault public key", "Verify the vault key fingerprint.", false)
 		return
 	}
 
@@ -252,10 +254,10 @@ func handleRegisterDevice(w http.ResponseWriter, r *http.Request, store *Store) 
 	})
 	if err != nil {
 		if errors.Is(err, ErrDeviceAlreadyTrusted) {
-			writeError(w, http.StatusConflict, "a different device is already registered")
+			writeApiError(w, http.StatusConflict, "UA-BROKER-006", "broker.register_device", "a different device is already registered", "Run 'authctl pair'.", false)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeApiError(w, http.StatusInternalServerError, "UA-BROKER-005", "broker.register_device", "Failed to register device.", "Check the broker logs.", false)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -263,22 +265,22 @@ func handleRegisterDevice(w http.ResponseWriter, r *http.Request, store *Store) 
 
 func handleGetTrustedDevice(w http.ResponseWriter, r *http.Request, store *Store) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeApiError(w, http.StatusMethodNotAllowed, "UA-BROKER-007", "broker.trusted_device", "method not allowed", "Use GET.", false)
 		return
 	}
 	dev := store.TrustedDevice()
 	if dev == nil {
-		writeError(w, http.StatusNotFound, "no trusted device registered")
+		writeApiError(w, http.StatusNotFound, "UA-BROKER-001", "broker.trusted_device", "no trusted device registered", "Run 'authctl pair'.", false)
 		return
 	}
 	der, err := x509.MarshalPKIXPublicKey(dev.PublicKey)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeApiError(w, http.StatusInternalServerError, "UA-BROKER-005", "broker.trusted_device", "Failed to marshal device key.", "Check the broker logs.", false)
 		return
 	}
 	vaultDER, err := x509.MarshalPKIXPublicKey(dev.VaultPublicKey)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeApiError(w, http.StatusInternalServerError, "UA-BROKER-005", "broker.trusted_device", "Failed to marshal vault key.", "Check the broker logs.", false)
 		return
 	}
 	writeJSON(w, http.StatusOK, TrustedDeviceResponse{
@@ -294,29 +296,29 @@ func handleGetTrustedDevice(w http.ResponseWriter, r *http.Request, store *Store
 
 func handleDesktops(w http.ResponseWriter, r *http.Request, store *Store) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeApiError(w, http.StatusMethodNotAllowed, "UA-BROKER-007", "broker.register_desktop", "method not allowed", "Use POST.", false)
 		return
 	}
 	var reg DesktopRegistration
 	if err := decodeJSON(w, r, &reg); err != nil {
-		writeError(w, http.StatusBadRequest, "malformed or invalid JSON")
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.register_desktop", "malformed or invalid JSON", "Check the request body.", false)
 		return
 	}
 	if reg.Algorithm != "ECDSA_P256_SHA256" {
-		writeError(w, http.StatusBadRequest, "unsupported algorithm")
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.register_desktop", "unsupported algorithm", "Use ECDSA_P256_SHA256.", false)
 		return
 	}
 	if reg.DesktopID == "" || reg.Name == "" || reg.PublicKey == "" {
-		writeError(w, http.StatusBadRequest, "missing required fields")
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.register_desktop", "missing required fields", "Provide desktop_id, name and public_key.", false)
 		return
 	}
 	pub, err := parseP256PublicKey(reg.PublicKey)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.register_desktop", err.Error(), "Provide a valid P-256 ECDSA public key.", false)
 		return
 	}
 	if desktopID(pub) != reg.DesktopID {
-		writeError(w, http.StatusBadRequest, "desktop_id does not match public key")
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.register_desktop", "desktop_id does not match public key", "Verify the desktop fingerprint.", false)
 		return
 	}
 	if err := store.RegisterDesktop(&Desktop{
@@ -326,10 +328,10 @@ func handleDesktops(w http.ResponseWriter, r *http.Request, store *Store) {
 		PublicKey: pub,
 	}); err != nil {
 		if errors.Is(err, ErrDeviceAlreadyTrusted) {
-			writeError(w, http.StatusConflict, "a different desktop is already registered")
+			writeApiError(w, http.StatusConflict, "UA-BROKER-006", "broker.register_desktop", "a different desktop is already trusted", "Run 'authctl desktop-register' or clear existing trust.", false)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeApiError(w, http.StatusInternalServerError, "UA-BROKER-005", "broker.register_desktop", "Failed to register desktop.", "Check the broker logs.", false)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -337,17 +339,17 @@ func handleDesktops(w http.ResponseWriter, r *http.Request, store *Store) {
 
 func handleGetTrustedDesktop(w http.ResponseWriter, r *http.Request, store *Store) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeApiError(w, http.StatusMethodNotAllowed, "UA-BROKER-007", "broker.trusted_desktop", "method not allowed", "Use GET.", false)
 		return
 	}
 	d := store.TrustedDesktop()
 	if d == nil {
-		writeError(w, http.StatusNotFound, "no trusted desktop registered")
+		writeApiError(w, http.StatusNotFound, "UA-BROKER-002", "broker.trusted_desktop", "no trusted desktop registered", "Run 'authctl desktop-register'.", false)
 		return
 	}
 	der, err := x509.MarshalPKIXPublicKey(d.PublicKey)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeApiError(w, http.StatusInternalServerError, "UA-BROKER-005", "broker.trusted_desktop", "Failed to marshal desktop key.", "Check the broker logs.", false)
 		return
 	}
 	writeJSON(w, http.StatusOK, TrustedDesktopResponse{
@@ -360,32 +362,32 @@ func handleGetTrustedDesktop(w http.ResponseWriter, r *http.Request, store *Stor
 
 func handleAttachReleaseRequest(w http.ResponseWriter, r *http.Request, store *Store, id string) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeApiError(w, http.StatusMethodNotAllowed, "UA-BROKER-007", "broker.attach_release", "method not allowed", "Use POST.", false)
 		return
 	}
 	var req ReleaseRequest
 	if err := decodeJSON(w, r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "malformed or invalid JSON")
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.attach_release", "malformed or invalid JSON", "Check the request body.", false)
 		return
 	}
 	if req.Protocol != "universal-auth:secure-release:v1" {
-		writeError(w, http.StatusBadRequest, "unsupported release protocol")
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.attach_release", "unsupported release protocol", "Use universal-auth:secure-release:v1.", false)
 		return
 	}
 	if req.DesktopID == "" || req.DesktopAlgorithm == "" || req.DesktopEphemeralPublic == "" || req.CredentialPackage == "" || req.PackageHash == "" || req.DesktopSignature == "" {
-		writeError(w, http.StatusBadRequest, "missing required release fields")
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.attach_release", "missing required release fields", "Check the secure release payload.", false)
 		return
 	}
 	updated, err := store.AttachReleaseRequest(id, req)
 	if err != nil {
 		if errors.Is(err, ErrRequestNotFound) {
-			writeError(w, http.StatusNotFound, "request not found")
+			writeApiError(w, http.StatusNotFound, "UA-BROKER-003", "broker.attach_release", "request not found", "The request may have expired.", false)
 		} else if errors.Is(err, ErrInvalidReleaseState) {
-			writeError(w, http.StatusConflict, "request is not pending")
+			writeApiError(w, http.StatusConflict, "UA-BROKER-006", "broker.attach_release", "request is not pending", "Create a new request.", false)
 		} else if errors.Is(err, ErrReleaseAlreadyAttached) {
-			writeError(w, http.StatusConflict, "release request already attached")
+			writeApiError(w, http.StatusConflict, "UA-BROKER-006", "broker.attach_release", "release request already attached", "This request already has a release payload.", false)
 		} else {
-			writeError(w, http.StatusInternalServerError, "internal error")
+			writeApiError(w, http.StatusInternalServerError, "UA-BROKER-005", "broker.attach_release", "Failed to attach release request.", "Check the broker logs.", false)
 		}
 		return
 	}
@@ -394,28 +396,28 @@ func handleAttachReleaseRequest(w http.ResponseWriter, r *http.Request, store *S
 
 func handleAttachReleaseResponse(w http.ResponseWriter, r *http.Request, store *Store, id string) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeApiError(w, http.StatusMethodNotAllowed, "UA-BROKER-007", "broker.attach_release_response", "method not allowed", "Use POST.", false)
 		return
 	}
 	var resp ReleaseResponse
 	if err := decodeJSON(w, r, &resp); err != nil {
-		writeError(w, http.StatusBadRequest, "malformed or invalid JSON")
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.attach_release_response", "malformed or invalid JSON", "Check the request body.", false)
 		return
 	}
 	if resp.Protocol != "universal-auth:secure-release:v1" || resp.CredentialID == "" || resp.PackageHash == "" || resp.PixelVaultKeyID == "" || resp.PixelEphemeralPublic == "" || resp.TransferNonce == "" || resp.EncryptedDEK == "" {
-		writeError(w, http.StatusBadRequest, "missing required release response fields")
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.attach_release_response", "missing required release response fields", "Check the secure release response.", false)
 		return
 	}
 	updated, err := store.AttachReleaseResponse(id, resp)
 	if err != nil {
 		if errors.Is(err, ErrRequestNotFound) {
-			writeError(w, http.StatusNotFound, "request not found")
+			writeApiError(w, http.StatusNotFound, "UA-BROKER-003", "broker.attach_release_response", "request not found", "The request may have expired.", false)
 		} else if errors.Is(err, ErrInvalidReleaseState) {
-			writeError(w, http.StatusConflict, "request is not pending")
+			writeApiError(w, http.StatusConflict, "UA-BROKER-006", "broker.attach_release_response", "request is not pending", "Create a new request.", false)
 		} else if errors.Is(err, ErrResponseAlreadyAttached) {
-			writeError(w, http.StatusConflict, "release response already attached")
+			writeApiError(w, http.StatusConflict, "UA-BROKER-006", "broker.attach_release_response", "release response already attached", "This request already has a response.", false)
 		} else {
-			writeError(w, http.StatusInternalServerError, "internal error")
+			writeApiError(w, http.StatusInternalServerError, "UA-BROKER-005", "broker.attach_release_response", "Failed to attach release response.", "Check the broker logs.", false)
 		}
 		return
 	}
@@ -461,10 +463,10 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func writeError(w http.ResponseWriter, status int, msg string) {
+func writeApiError(w http.ResponseWriter, status int, code, stage, message, action string, retryable bool) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	_ = json.NewEncoder(w).Encode(model.NewApiError(code, stage, message, action, retryable))
 }
 
 func authMiddleware(next http.Handler, token string) http.Handler {
@@ -475,12 +477,12 @@ func authMiddleware(next http.Handler, token string) http.Handler {
 		}
 		auth := r.Header.Get("Authorization")
 		if !strings.HasPrefix(auth, authHeaderPrefix) {
-			writeError(w, http.StatusUnauthorized, "unauthorized")
+			writeApiError(w, http.StatusUnauthorized, "UA-BROKER-008", "broker.auth", "unauthorized", "Provide a valid bearer token.", false)
 			return
 		}
 		provided := strings.TrimPrefix(auth, authHeaderPrefix)
 		if subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
-			writeError(w, http.StatusUnauthorized, "unauthorized")
+			writeApiError(w, http.StatusUnauthorized, "UA-BROKER-008", "broker.auth", "unauthorized", "Provide a valid bearer token.", false)
 			return
 		}
 		next.ServeHTTP(w, r)

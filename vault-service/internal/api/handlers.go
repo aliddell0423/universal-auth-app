@@ -40,7 +40,7 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeApiError(w, http.StatusMethodNotAllowed, "UA-VAULT-007", "vault.healthz", "method not allowed", "Use GET.", false)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -48,7 +48,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeApiError(w, http.StatusMethodNotAllowed, "UA-VAULT-007", "vault.readyz", "method not allowed", "Use GET.", false)
 		return
 	}
 	if err := s.store.Ready(); err != nil {
@@ -65,7 +65,7 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, model.NewApiError(
 			"UA-VAULT-004",
 			"vault.readyz",
-			"Vault storage is not ready: "+err.Error(),
+			"Vault storage is not ready.",
 			"Check the vault service logs and run 'authctl doctor'.",
 			false,
 		))
@@ -81,14 +81,14 @@ func (s *Server) handleCredentials(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		s.handleCreate(w, r)
 	default:
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeApiError(w, http.StatusMethodNotAllowed, "UA-VAULT-007", "vault.credentials", "method not allowed", "Use GET or POST.", false)
 	}
 }
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	meta, err := s.store.List(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeApiError(w, http.StatusInternalServerError, "UA-VAULT-004", "vault.list", "Failed to list credentials.", "Check the vault service logs.", false)
 		return
 	}
 	writeJSON(w, http.StatusOK, meta)
@@ -97,18 +97,18 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var in model.CredentialPackageInput
 	if err := decodeJSON(w, r, &in); err != nil {
-		writeError(w, http.StatusBadRequest, "malformed or invalid JSON")
+		writeApiError(w, http.StatusBadRequest, "UA-VAULT-003", "vault.create", "malformed or invalid JSON", "Check the request body.", false)
 		return
 	}
 	pkg, err := s.store.CreateCredential(r.Context(), in)
 	if err != nil {
 		msg := err.Error()
 		if strings.Contains(msg, "already exists") {
-			writeError(w, http.StatusConflict, "credential already exists for origin")
+			writeApiError(w, http.StatusConflict, "UA-VAULT-002", "vault.create", "credential already exists for origin", "Delete the existing credential first.", false)
 		} else if strings.Contains(msg, "required") || strings.Contains(msg, "unsupported") || strings.Contains(msg, "must") || strings.Contains(msg, "wrap_ephemeral") {
-			writeError(w, http.StatusBadRequest, msg)
+			writeApiError(w, http.StatusBadRequest, "UA-VAULT-003", "vault.create", msg, "Check the credential package.", false)
 		} else {
-			writeError(w, http.StatusInternalServerError, "internal error")
+			writeApiError(w, http.StatusInternalServerError, "UA-VAULT-004", "vault.create", "Failed to store credential.", "Check the vault service logs.", false)
 		}
 		return
 	}
@@ -117,17 +117,17 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleExists(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeApiError(w, http.StatusMethodNotAllowed, "UA-VAULT-007", "vault.exists", "method not allowed", "Use GET.", false)
 		return
 	}
 	origin := r.URL.Query().Get("origin")
 	if origin == "" {
-		writeError(w, http.StatusBadRequest, "origin query parameter is required")
+		writeApiError(w, http.StatusBadRequest, "UA-VAULT-003", "vault.exists", "origin query parameter is required", "Provide an origin.", false)
 		return
 	}
 	exists, err := s.store.Exists(r.Context(), origin)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeApiError(w, http.StatusInternalServerError, "UA-VAULT-004", "vault.exists", "Failed to check credential existence.", "Check the vault service logs.", false)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"exists": exists})
@@ -135,21 +135,21 @@ func (s *Server) handleExists(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeApiError(w, http.StatusMethodNotAllowed, "UA-VAULT-007", "vault.package_fetch", "method not allowed", "Use GET.", false)
 		return
 	}
 	origin := r.URL.Query().Get("origin")
 	if origin == "" {
-		writeError(w, http.StatusBadRequest, "origin query parameter is required")
+		writeApiError(w, http.StatusBadRequest, "UA-VAULT-003", "vault.package_fetch", "origin query parameter is required", "Provide an origin.", false)
 		return
 	}
 	pkg, err := s.store.GetPackageByOrigin(r.Context(), origin)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "credential not found")
+			writeApiError(w, http.StatusNotFound, "UA-VAULT-002", "vault.package_fetch", "credential not found", "Store a credential for this origin.", false)
 			return
 		}
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeApiError(w, http.StatusInternalServerError, "UA-VAULT-004", "vault.package_fetch", "Failed to retrieve credential.", "Check the vault service logs.", false)
 		return
 	}
 	writeJSON(w, http.StatusOK, pkg)
@@ -158,19 +158,19 @@ func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCredentialByID(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/credentials/")
 	if id == "" || strings.HasSuffix(id, "/") {
-		writeError(w, http.StatusNotFound, "credential not found")
+		writeApiError(w, http.StatusNotFound, "UA-VAULT-002", "vault.delete", "credential not found", "Provide a valid credential ID.", false)
 		return
 	}
 	if r.Method != http.MethodDelete {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeApiError(w, http.StatusMethodNotAllowed, "UA-VAULT-007", "vault.delete", "method not allowed", "Use DELETE.", false)
 		return
 	}
 	if err := s.store.Delete(r.Context(), id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "credential not found")
+			writeApiError(w, http.StatusNotFound, "UA-VAULT-002", "vault.delete", "credential not found", "Provide a valid credential ID.", false)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeApiError(w, http.StatusInternalServerError, "UA-VAULT-004", "vault.delete", "Failed to delete credential.", "Check the vault service logs.", false)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -196,10 +196,10 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func writeError(w http.ResponseWriter, status int, msg string) {
+func writeApiError(w http.ResponseWriter, status int, code, stage, message, action string, retryable bool) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	_ = json.NewEncoder(w).Encode(model.NewApiError(code, stage, message, action, retryable))
 }
 
 func authMiddleware(next http.Handler, token string) http.Handler {
@@ -210,12 +210,12 @@ func authMiddleware(next http.Handler, token string) http.Handler {
 		}
 		auth := r.Header.Get("Authorization")
 		if !strings.HasPrefix(auth, authHeaderPrefix) {
-			writeError(w, http.StatusUnauthorized, "unauthorized")
+			writeApiError(w, http.StatusUnauthorized, "UA-VAULT-008", "vault.auth", "unauthorized", "Provide a valid bearer token.", false)
 			return
 		}
 		provided := strings.TrimPrefix(auth, authHeaderPrefix)
 		if subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
-			writeError(w, http.StatusUnauthorized, "unauthorized")
+			writeApiError(w, http.StatusUnauthorized, "UA-VAULT-008", "vault.auth", "unauthorized", "Provide a valid bearer token.", false)
 			return
 		}
 		next.ServeHTTP(w, r)

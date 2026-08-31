@@ -1,5 +1,4 @@
 let pending = false;
-const shownNotifications = new Set();
 
 function findUsernameInput(passwordInput) {
   const form = passwordInput.closest('form') || passwordInput.form;
@@ -44,26 +43,6 @@ function fillLogin(passwordInput, credential) {
   fillValue(passwordInput, credential.password);
 }
 
-function showNotification(response) {
-  const key = `${response.code || 'unknown'}-${response.trace_id || ''}`;
-  if (shownNotifications.has(key)) {
-    return;
-  }
-  shownNotifications.add(key);
-  if (shownNotifications.size > 10) {
-    const [first] = shownNotifications;
-    shownNotifications.delete(first);
-  }
-
-  if (typeof browser !== 'undefined' && browser.notifications) {
-    browser.notifications.create({
-      type: 'basic',
-      title: 'Universal Auth failed',
-      message: `${response.code || 'unknown'}: ${response.error || 'Unknown error'}`,
-    });
-  }
-}
-
 document.addEventListener('focusin', async (event) => {
   const target = event.target;
   if (!target || target.tagName !== 'INPUT' || target.type !== 'password') {
@@ -98,7 +77,12 @@ document.addEventListener('focusin', async (event) => {
     });
 
     if (response.status === 'error') {
-      showNotification(response);
+      browser.runtime.sendMessage({
+        type: 'show_notification',
+        origin: window.location.origin,
+        code: response.code,
+        error: response.error,
+      });
     }
   } catch (err) {
     console.error('Universal Auth content error:', err);
