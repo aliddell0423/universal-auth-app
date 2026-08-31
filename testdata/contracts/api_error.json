@@ -1,0 +1,9 @@
+{
+  "code": "UA-BROKER-003",
+  "stage": "broker.attach_release_response",
+  "message": "Broker rejected the secure release response.",
+  "trace_id": "trace-7fe91c",
+  "request_id": "req-abc123",
+  "retryable": false,
+  "action": "Check the secure release response."
+}

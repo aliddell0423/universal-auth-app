@@ -1,0 +1,8 @@
+{
+  "code": "UA-VAULT-001",
+  "stage": "vault.readyz",
+  "message": "Vault database is on a legacy schema and must be recreated.",
+  "trace_id": "trace-legacy",
+  "retryable": false,
+  "action": "Recreate the vault database or restore a current backup."
+}

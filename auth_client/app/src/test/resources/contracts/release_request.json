@@ -1,0 +1,9 @@
+{
+  "protocol": "universal-auth:secure-release:v1",
+  "desktop_id": "desktop-abc",
+  "desktop_algorithm": "ECDSA_P256_SHA256",
+  "desktop_ephemeral_public_key": "ephemeral_pub_base64url",
+  "credential_package": "universal-auth:vault-package:v2\ncredential_id=Y3JlZC0xMjM\norigin=aHR0cHM6Ly9leGFtcGxlLmNvbQ\nciphertext=Y2lwaGVydGV4dA\ncipher_nonce=Y2lwaGVyLW5vbmNl\nwrapped_dek=d3JhcHBlZC1kZWs\nwrap_nonce=d3JhcC1ub25jZQ\nwrap_ephemeral_public_key=d3JhcC1lcGhlbWVyYWwtcHVibGljLWtleQ\npixel_vault_key_id=pixel-key-1\ncrypto_version=2\n",
+  "package_hash": "SF7NQxnaJ8S-172to0dWTEHBV5-ABTXwBxxjIPogvcU",
+  "desktop_signature": "c2ln"
+}

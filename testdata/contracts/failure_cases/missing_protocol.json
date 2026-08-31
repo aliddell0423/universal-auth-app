@@ -1,0 +1,8 @@
+{
+  "credential_id": "cred-123",
+  "package_hash": "hash-abc",
+  "pixel_vault_key_id": "pixel-key-1",
+  "pixel_ephemeral_public_key": "e30",
+  "transfer_nonce": "nonce123",
+  "encrypted_dek": "encDek123"
+}

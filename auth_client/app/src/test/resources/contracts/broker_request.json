@@ -1,0 +1,12 @@
+{
+  "id": "req-abc123",
+  "source": "universal-auth",
+  "kind": "credential_release",
+  "resource": "https://example.com",
+  "message": "Release saved login credential for https://example.com",
+  "challenge": "challenge-value",
+  "client_nonce": "client-nonce-1",
+  "status": "pending",
+  "created_at": "2026-08-30T12:00:00Z",
+  "trace_id": "trace-7fe91c"
+}

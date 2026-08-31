@@ -1,0 +1,11 @@
+universal-auth:secure-release-request:v1
+request_id=cmVxLWFiYzEyMw
+challenge=challenge-value
+client_nonce=client-nonce-1
+desktop_id=desktop-abc
+kind=Y3JlZGVudGlhbF9yZWxlYXNl
+origin=aHR0cHM6Ly9leGFtcGxlLmNvbQ
+credential_id=Y3JlZC0xMjM
+package_hash=hash-abc
+desktop_ephemeral_public_key=ephemeral_pub_base64url
+pixel_vault_key_id=pixel-key-1
