@@ -43,6 +43,18 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader, tr
 	return c.client.Do(req)
 }
 
+func (c *Client) Ready(ctx context.Context) error {
+	resp, err := c.do(ctx, http.MethodGet, "/readyz", nil, "")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	return apierror.FromResponse(resp, "broker.readyz", "UA-BROKER-009")
+}
+
 func (c *Client) GetTrustedDevice(ctx context.Context, traceID string) (TrustedDevice, error) {
 	resp, err := c.do(ctx, http.MethodGet, "/v1/devices/trusted", nil, traceID)
 	if err != nil {

@@ -53,6 +53,18 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte, trace
 	return c.client.Do(req)
 }
 
+func (c *Client) Ready(ctx context.Context) error {
+	resp, err := c.do(ctx, http.MethodGet, "/readyz", nil, "")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	return apierror.FromResponse(resp, "vault.readyz", "UA-VAULT-004")
+}
+
 func (c *Client) CredentialExists(ctx context.Context, origin, traceID string) (bool, error) {
 	u := "/v1/credentials/exists?origin=" + url.QueryEscape(origin)
 	resp, err := c.do(ctx, http.MethodGet, u, nil, traceID)

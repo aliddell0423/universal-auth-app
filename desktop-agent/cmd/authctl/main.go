@@ -42,6 +42,8 @@ func main() {
 		request(os.Args[2:])
 	case "inspect":
 		inspect(os.Args[2:])
+	case "doctor":
+		doctorCmd(os.Args[2:])
 	default:
 		usage()
 		os.Exit(exitError)
@@ -49,7 +51,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: authctl <pair|desktop-register|request|inspect> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: authctl <pair|desktop-register|request|inspect|doctor> [flags]")
 }
 
 func pair(args []string) {
