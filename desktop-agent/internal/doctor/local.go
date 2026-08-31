@@ -9,7 +9,7 @@ import (
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/identity"
 )
 
-func checkLocal(cfg *config.Config) []Result {
+func checkLocal(cfg *config.Config, cfgErr error) []Result {
 	var out []Result
 
 	path := config.DefaultPath()
@@ -17,18 +17,42 @@ func checkLocal(cfg *config.Config) []Result {
 	if err != nil {
 		if os.IsNotExist(err) {
 			out = append(out, newResult("Local", "config readable", Fail, "UA-CONFIG-001", fmt.Sprintf("Config file not found at %s.", path), "Run 'authctl pair' to create one."))
-			return out
+		} else {
+			out = append(out, newResult("Local", "config readable", Fail, "UA-CONFIG-001", fmt.Sprintf("Cannot read config file: %v.", err), "Check permissions or run 'authctl pair'."))
 		}
-		out = append(out, newResult("Local", "config readable", Fail, "UA-CONFIG-001", fmt.Sprintf("Cannot read config file: %v.", err), "Check permissions or run 'authctl pair'."))
 		return out
 	}
 	out = append(out, newResult("Local", "config readable", Pass, "", "Config file is readable.", ""))
+
+	if cfgErr != nil {
+		out = append(out, newResult("Local", "config valid", Fail, "UA-CONFIG-001", fmt.Sprintf("Config is not valid: %v.", cfgErr), "Fix or regenerate ~/.config/universal-auth/config.json."))
+		return append(out,
+			newResult("Local", "config version", Skip, "", "Config is invalid.", ""),
+			newResult("Local", "broker URL", Skip, "", "Config is invalid.", ""),
+			newResult("Local", "vault URL", Skip, "", "Config is invalid.", ""),
+			newResult("Local", "broker token", Skip, "", "Config is invalid.", ""),
+			newResult("Local", "vault token", Skip, "", "Config is invalid.", ""),
+			newResult("Local", "desktop identity", Skip, "", "Config is invalid.", ""),
+			newResult("Local", "Pixel vault key pinned", Skip, "", "Config is invalid.", ""),
+		)
+	}
+	out = append(out, newResult("Local", "config valid", Pass, "", "Config is valid JSON.", ""))
 
 	if cfg == nil {
 		out = append(out, newResult("Local", "config version", Fail, "UA-CONFIG-001", "Config is not loaded.", "Run 'authctl pair'."))
 		return out
 	}
-	out = append(out, newResult("Local", "config version", Pass, "", fmt.Sprintf("Config version is %d.", cfg.ConfigVersion), ""))
+
+	switch {
+	case cfg.ConfigVersion == config.CurrentConfigVersion:
+		out = append(out, newResult("Local", "config version", Pass, "", fmt.Sprintf("Config version is %d.", cfg.ConfigVersion), ""))
+	case cfg.ConfigVersion == 0:
+		out = append(out, newResult("Local", "config version", Fail, "UA-CONFIG-001", "Legacy config without an explicit schema version.", "Run 'authctl config migrate' or recreate the config with 'authctl pair'."))
+	case cfg.ConfigVersion > config.CurrentConfigVersion:
+		out = append(out, newResult("Local", "config version", Fail, "UA-CONFIG-001", fmt.Sprintf("Config version %d is newer than the supported version %d.", cfg.ConfigVersion, config.CurrentConfigVersion), "Downgrade or upgrade authctl to match this config."))
+	default:
+		out = append(out, newResult("Local", "config version", Fail, "UA-CONFIG-001", fmt.Sprintf("Config version %d is not supported.", cfg.ConfigVersion), "Run 'authctl config migrate' or 'authctl pair'."))
+	}
 
 	if cfg.BrokerURL == "" {
 		out = append(out, newResult("Local", "broker URL", Fail, "UA-CONFIG-003", "broker_url is not configured.", "Run 'authctl pair' or edit the config."))
@@ -70,9 +94,13 @@ func checkLocal(cfg *config.Config) []Result {
 		out = append(out, newResult("Local", "vault token", Pass, "", "Vault token is available and has safe permissions.", ""))
 	}
 
-	ident, err := identity.LoadOrCreate("")
+	ident, err := identity.Load("")
 	if err != nil {
-		out = append(out, newResult("Local", "desktop identity", Fail, "UA-CONFIG-006", fmt.Sprintf("Cannot load desktop identity: %v.", err), "Recreate the desktop identity."))
+		if os.IsNotExist(err) {
+			out = append(out, newResult("Local", "desktop identity", Fail, "UA-CONFIG-006", "Desktop identity file not found.", "Generate a desktop identity with 'authctl desktop-register' or 'identity' setup."))
+		} else {
+			out = append(out, newResult("Local", "desktop identity", Fail, "UA-CONFIG-006", fmt.Sprintf("Cannot load desktop identity: %v.", err), "Recreate the desktop identity."))
+		}
 	} else {
 		out = append(out, newResult("Local", "desktop identity", Pass, "", fmt.Sprintf("Desktop identity fingerprint: %s.", ident.DesktopID()), ""))
 	}

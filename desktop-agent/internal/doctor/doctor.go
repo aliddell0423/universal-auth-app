@@ -51,11 +51,11 @@ type Flags struct {
 	Section string
 }
 
-func Run(ctx context.Context, cfg *config.Config, flags Flags) *Report {
+func Run(ctx context.Context, cfg *config.Config, cfgErr error, flags Flags) *Report {
 	var results []Result
 
 	if flags.Section == "" || flags.Section == "local" {
-		results = append(results, checkLocal(cfg)...)
+		results = append(results, checkLocal(cfg, cfgErr)...)
 	}
 
 	brokerClient, vaultClient := newClients(cfg)

@@ -30,6 +30,25 @@ func DefaultPath() string {
 	return filepath.Join(home, ".config", "universal-auth", "desktop-identity.pem")
 }
 
+// Load reads an existing desktop identity key without creating one.
+func Load(path string) (*Identity, error) {
+	if path == "" {
+		path = DefaultPath()
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("identity file not found at %s", path)
+		}
+		return nil, err
+	}
+	priv, err := parsePEM(data)
+	if err != nil {
+		return nil, fmt.Errorf("identity file %s: %w", path, err)
+	}
+	return newIdentity(path, priv), nil
+}
+
 // LoadOrCreate loads an existing desktop identity key or generates and stores a new one.
 func LoadOrCreate(path string) (*Identity, error) {
 	if path == "" {

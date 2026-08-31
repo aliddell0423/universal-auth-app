@@ -21,7 +21,10 @@ func doctorCmd(args []string) {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(exitError)
 	}
-
+	if *section != "" && *section != "local" && *section != "broker" && *section != "vault" && *section != "browser" {
+		fmt.Fprintf(os.Stderr, "error: unknown section %q; use local, broker, vault, or browser\n", *section)
+		os.Exit(exitError)
+	}
 	cfg, err := config.Load(config.DefaultPath())
 	if err != nil {
 		cfg = &config.Config{}
@@ -30,7 +33,7 @@ func doctorCmd(args []string) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	report := doctor.Run(ctx, cfg, doctor.Flags{
+	report := doctor.Run(ctx, cfg, err, doctor.Flags{
 		Origin:  *origin,
 		JSON:    *jsonOut,
 		Section: *section,
