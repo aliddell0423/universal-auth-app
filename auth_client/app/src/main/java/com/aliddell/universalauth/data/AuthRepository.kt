@@ -52,14 +52,20 @@ class DefaultAuthRepository(
     private val baseUrl: String = BuildConfig.BROKER_BASE_URL,
     private val token: String = BuildConfig.BROKER_TOKEN
 ) : AuthRepository {
-    private val json = Json { ignoreUnknownKeys = true }
+    private val json = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+    }
     private val mediaType = "application/json".toMediaType()
 
     override suspend fun checkHealth(): Result<String> = withContext(Dispatchers.IO) {
         val request = Request.Builder().url("$baseUrl/healthz").build()
         runCatching {
             client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
+                if (!response.isSuccessful) {
+                    val body = response.body.string().take(200)
+                    throw Exception("HTTP ${response.code}: $body")
+                }
                 response.body.string()
             }
         }
@@ -72,7 +78,10 @@ class DefaultAuthRepository(
             .build()
         runCatching {
             client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
+                if (!response.isSuccessful) {
+                    val body = response.body.string().take(200)
+                    throw Exception("HTTP ${response.code}: $body")
+                }
                 val body = response.body.string()
                 json.decodeFromString<List<AuthRequest>>(body)
             }
@@ -92,7 +101,10 @@ class DefaultAuthRepository(
             .build()
         runCatching {
             client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
+                if (!response.isSuccessful) {
+                    val body = response.body.string().take(200)
+                    throw Exception("HTTP ${response.code}: $body")
+                }
             }
         }
     }
@@ -104,7 +116,10 @@ class DefaultAuthRepository(
             .build()
         runCatching {
             client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
+                if (!response.isSuccessful) {
+                    val body = response.body.string().take(200)
+                    throw Exception("HTTP ${response.code}: $body")
+                }
                 val body = response.body.string()
                 json.decodeFromString<TrustedDesktop>(body)
             }
@@ -126,7 +141,10 @@ class DefaultAuthRepository(
             .build()
         runCatching {
             client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
+                if (!response.isSuccessful) {
+                    val body = response.body.string().take(200)
+                    throw Exception("HTTP ${response.code}: $body")
+                }
                 val responseBody = response.body.string()
                 json.decodeFromString<AuthRequest>(responseBody)
             }
@@ -147,7 +165,10 @@ class DefaultAuthRepository(
             .build()
         runCatching {
             client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
+                if (!response.isSuccessful) {
+                    val body = response.body.string().take(200)
+                    throw Exception("HTTP ${response.code}: $body")
+                }
                 val responseBody = response.body.string()
                 json.decodeFromString<AuthRequest>(responseBody)
             }
@@ -165,7 +186,10 @@ class DefaultAuthRepository(
             .build()
         runCatching {
             client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
+                if (!response.isSuccessful) {
+                    val body = response.body.string().take(200)
+                    throw Exception("HTTP ${response.code}: $body")
+                }
                 val responseBody = response.body.string()
                 json.decodeFromString<AuthRequest>(responseBody)
             }

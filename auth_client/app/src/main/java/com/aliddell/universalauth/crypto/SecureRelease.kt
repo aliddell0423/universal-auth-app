@@ -124,6 +124,7 @@ object SecureRelease {
         val encryptedDek = aesGcmEncrypt(transferKey, dek, transferNonce, aad)
 
         return ReleaseResponse(
+            protocol = "universal-auth:secure-release:v1",
             credentialId = pkg.credentialId,
             packageHash = release.packageHash,
             pixelVaultKeyId = pkg.pixelVaultKeyId,

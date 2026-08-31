@@ -2,6 +2,9 @@ package com.aliddell.universalauth
 
 import com.aliddell.universalauth.data.AuthRepository
 import com.aliddell.universalauth.data.AuthRequest
+import com.aliddell.universalauth.data.DeviceRegistrationWithVault
+import com.aliddell.universalauth.data.ReleaseResponse
+import com.aliddell.universalauth.data.TrustedDesktop
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -64,7 +67,10 @@ class AuthViewModelTest {
     @Test
     fun registerDevice_updatesDeviceRegistered() {
         val viewModel = AuthViewModel(FakeAuthRepository())
-        viewModel.registerDevice("id", "Pixel 10", "ECDSA_P256_SHA256", "pubkey")
+        viewModel.registerDevice(
+            "id", "Pixel 10", "ECDSA_P256_SHA256", "pubkey",
+            "vault", "ECDH_P256_HKDF_SHA256", "vaultPub"
+        )
         testDispatcher.scheduler.advanceUntilIdle()
 
         assertTrue(viewModel.uiState.value.deviceRegistered)
@@ -125,16 +131,21 @@ class AuthViewModelTest {
             Result.success(requests)
 
         override suspend fun registerDevice(
-            deviceId: String,
-            name: String,
-            algorithm: String,
-            publicKey: String
+            registration: DeviceRegistrationWithVault
         ): Result<Unit> = Result.success(Unit)
+
+        override suspend fun getTrustedDesktop(): Result<TrustedDesktop> =
+            Result.failure(Exception("no trusted desktop"))
 
         override suspend fun submitSignedApproval(
             id: String,
             deviceId: String,
             signature: String
+        ): Result<AuthRequest> = Result.success(requests.first { it.id == id })
+
+        override suspend fun submitReleaseResponse(
+            id: String,
+            response: ReleaseResponse
         ): Result<AuthRequest> = Result.success(requests.first { it.id == id })
 
         override suspend fun submitDenial(id: String): Result<AuthRequest> =

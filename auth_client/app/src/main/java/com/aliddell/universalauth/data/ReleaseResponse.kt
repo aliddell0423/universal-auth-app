@@ -5,7 +5,7 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class ReleaseResponse(
-    val protocol: String = "universal-auth:secure-release:v1",
+    val protocol: String,
     @SerialName("credential_id") val credentialId: String,
     @SerialName("package_hash") val packageHash: String,
     @SerialName("pixel_vault_key_id") val pixelVaultKeyId: String,
