@@ -21,7 +21,11 @@ import (
 const testToken = "dev-only-change-this"
 
 func newTestServer(t *testing.T) *httptest.Server {
-	return httptest.NewServer(newServer(NewStore(), testToken))
+	store, err := NewStore(":memory:")
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	return httptest.NewServer(newServer(store, testToken))
 }
 
 func doRequest(t *testing.T, srv *httptest.Server, method, path, auth string, body io.Reader) *http.Response {
@@ -643,5 +647,131 @@ func TestCanonicalPayload(t *testing.T) {
 	expected := string(golden)
 	if string(payload) != expected {
 		t.Fatalf("payload mismatch\nexpected:\n%s\nactual:\n%s", expected, string(payload))
+	}
+}
+
+func TestPersistenceLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := dir + "/broker.db"
+
+	// Register device and desktop with the initial store.
+	store1, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer store1.Close()
+	srv1 := httptest.NewServer(newServer(store1, testToken))
+	defer srv1.Close()
+
+	priv := generateTestKey(t)
+	registerDevice(t, srv1, &priv.PublicKey)
+	registerDesktop(t, srv1, &priv.PublicKey)
+
+	devID := deviceIDFromKey(t, &priv.PublicKey)
+	checkTrustedDevice(t, srv1, devID)
+	checkTrustedDesktop(t, srv1, devID)
+
+	// Create a new store with the same database; it should restore trust.
+	store2, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("new store from same db: %v", err)
+	}
+	defer store2.Close()
+	srv2 := httptest.NewServer(newServer(store2, testToken))
+	defer srv2.Close()
+
+	checkTrustedDevice(t, srv2, devID)
+	checkTrustedDesktop(t, srv2, devID)
+
+	// Idempotent re-registration still succeeds.
+	registerDevice(t, srv2, &priv.PublicKey)
+	registerDesktop(t, srv2, &priv.PublicKey)
+
+	// A different device is rejected.
+	other := generateTestKey(t)
+	resp := doDeviceRegister(t, srv2, &other.PublicKey)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 for different device, got %d", resp.StatusCode)
+	}
+}
+
+func TestReadiness(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+	resp := doRequest(t, srv, http.MethodGet, "/readyz", "", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestEmptyDatabaseStartsReady(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := dir + "/broker.db"
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer store.Close()
+	if err := store.Ready(); err != nil {
+		t.Fatalf("store not ready: %v", err)
+	}
+}
+
+func registerDesktop(t *testing.T, srv *httptest.Server, pub *ecdsa.PublicKey) {
+	t.Helper()
+	der, _ := x509.MarshalPKIXPublicKey(pub)
+	devID := deviceIDFromKey(t, pub)
+	payload := fmt.Sprintf(`{"desktop_id":"%s","name":"Fedora","algorithm":"ECDSA_P256_SHA256","public_key":"%s"}`, devID, base64.StdEncoding.EncodeToString(der))
+	resp := doRequest(t, srv, http.MethodPost, "/v1/desktops", "Bearer "+testToken, strings.NewReader(payload))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("register desktop failed: %d %s", resp.StatusCode, body)
+	}
+}
+
+func doDeviceRegister(t *testing.T, srv *httptest.Server, pub *ecdsa.PublicKey) *http.Response {
+	t.Helper()
+	der, _ := x509.MarshalPKIXPublicKey(pub)
+	devID := deviceIDFromKey(t, pub)
+	vaultPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	vaultDER, _ := x509.MarshalPKIXPublicKey(&vaultPriv.PublicKey)
+	vaultID := deviceIDFromKey(t, &vaultPriv.PublicKey)
+	payload := fmt.Sprintf(`{"device_id":"%s","name":"Pixel","algorithm":"ECDSA_P256_SHA256","public_key":"%s","vault_key_id":"%s","vault_algorithm":"ECDH_P256_HKDF_SHA256","vault_public_key":"%s"}`, devID, base64.StdEncoding.EncodeToString(der), vaultID, base64.StdEncoding.EncodeToString(vaultDER))
+	return doRequest(t, srv, http.MethodPost, "/v1/devices/register", "Bearer "+testToken, strings.NewReader(payload))
+}
+
+func checkTrustedDevice(t *testing.T, srv *httptest.Server, want string) {
+	t.Helper()
+	resp := doRequest(t, srv, http.MethodGet, "/v1/devices/trusted", "Bearer "+testToken, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	var got TrustedDeviceResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.DeviceID != want {
+		t.Fatalf("device_id mismatch: got %s want %s", got.DeviceID, want)
+	}
+}
+
+func checkTrustedDesktop(t *testing.T, srv *httptest.Server, want string) {
+	t.Helper()
+	resp := doRequest(t, srv, http.MethodGet, "/v1/desktops/trusted", "Bearer "+testToken, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	var got TrustedDesktopResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.DesktopID != want {
+		t.Fatalf("desktop_id mismatch: got %s want %s", got.DesktopID, want)
 	}
 }

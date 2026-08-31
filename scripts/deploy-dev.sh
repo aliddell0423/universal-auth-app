@@ -90,10 +90,13 @@ podman save vault-service:dev | ssh "${SSH_OPTS[@]}" "$TARGET" podman load
 echo "==> Replacing remote containers"
 ssh "${SSH_OPTS[@]}" "$TARGET" '
     podman rm -f auth-broker 2>/dev/null || true
+    mkdir -p "$HOME/.local/share/universal-auth/broker"
     podman run -d \
         --name auth-broker \
         -p 8080:8080 \
         --env-file ~/.config/auth-broker/auth-broker.env \
+        -e BROKER_DB=/data/broker.db \
+        -v "$HOME/.local/share/universal-auth/broker:/data" \
         --restart on-failure:5 \
         auth-broker:dev
 
@@ -108,7 +111,7 @@ ssh "${SSH_OPTS[@]}" "$TARGET" '
 '
 
 echo "==> Waiting for readiness checks"
-BROKER_HEALTH="http://$AUTH_DEV_HOST:8080/healthz"
+BROKER_HEALTH="http://$AUTH_DEV_HOST:8080/readyz"
 VAULT_HEALTH="http://$AUTH_DEV_HOST:8081/readyz"
 
 for i in {1..15}; do

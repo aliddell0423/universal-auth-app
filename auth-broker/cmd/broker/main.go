@@ -15,7 +15,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	store := NewStore()
+	dbPath := os.Getenv("BROKER_DB")
+	if dbPath == "" {
+		dbPath = "/data/broker.db"
+	}
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to open broker store: %v\n", err)
+		os.Exit(1)
+	}
+	defer store.Close()
+
 	handler := newServer(store, token)
 
 	srv := &http.Server{

@@ -59,6 +59,7 @@ type TrustedDesktopResponse struct {
 func newServer(store *Store, token string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", handleHealth)
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) { handleReady(w, r, store) })
 	mux.HandleFunc("/v1/requests/pending", func(w http.ResponseWriter, r *http.Request) { handleListPending(w, r, store) })
 	mux.HandleFunc("/v1/requests/", func(w http.ResponseWriter, r *http.Request) { handleRequestByID(w, r, store) })
 	mux.HandleFunc("/v1/requests", func(w http.ResponseWriter, r *http.Request) { handleCreate(w, r, store) })
@@ -72,6 +73,24 @@ func newServer(store *Store, token string) http.Handler {
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeApiError(w, http.StatusMethodNotAllowed, "UA-BROKER-007", "broker.healthz", "method not allowed", "Use GET.", false)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func handleReady(w http.ResponseWriter, r *http.Request, store *Store) {
+	if r.Method != http.MethodGet {
+		writeApiError(w, http.StatusMethodNotAllowed, "UA-BROKER-007", "broker.readyz", "method not allowed", "Use GET.", false)
+		return
+	}
+	if err := store.Ready(); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, model.NewApiError(
+			"UA-BROKER-009",
+			"broker.readyz",
+			"Broker is not ready.",
+			"Check the broker logs and verify the data volume.",
+			false,
+		))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

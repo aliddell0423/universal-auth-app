@@ -2,14 +2,18 @@ package main
 
 import (
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
+
+	"auth-broker/internal/persist"
 )
 
 type RequestStatus string
@@ -111,13 +115,80 @@ var (
 
 type Store struct {
 	mu      sync.RWMutex
+	db      *persist.DB
 	reqs    map[string]*Request
 	device  *Device
 	desktop *Desktop
 }
 
-func NewStore() *Store {
-	return &Store{reqs: make(map[string]*Request)}
+func NewStore(dbPath string) (*Store, error) {
+	db, err := persist.Open(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	s := &Store{db: db, reqs: make(map[string]*Request)}
+
+	pd, err := db.LoadDevice()
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("load trusted device: %w", err)
+	}
+	if pd != nil {
+		pub, err := parseP256(pd.PublicKey)
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+		vaultPub, err := parseP256(pd.VaultPublicKey)
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+		s.device = &Device{
+			DeviceID:       pd.DeviceID,
+			Name:           pd.Name,
+			Algorithm:      pd.Algorithm,
+			PublicKey:      pub,
+			VaultKeyID:     pd.VaultKeyID,
+			VaultAlgo:      pd.VaultAlgo,
+			VaultPublicKey: vaultPub,
+		}
+	}
+
+	pc, err := db.LoadDesktop()
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("load trusted desktop: %w", err)
+	}
+	if pc != nil {
+		pub, err := parseP256(pc.PublicKey)
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+		s.desktop = &Desktop{
+			DesktopID: pc.DesktopID,
+			Name:      pc.Name,
+			Algorithm: pc.Algorithm,
+			PublicKey: pub,
+		}
+	}
+
+	return s, nil
+}
+
+func (s *Store) Ready() error {
+	if s.db == nil {
+		return errors.New("persistence not available")
+	}
+	return s.db.Ready()
+}
+
+func (s *Store) Close() error {
+	if s.db != nil {
+		return s.db.Close()
+	}
+	return nil
 }
 
 func (s *Store) Create(c CreateRequest, traceID string) (*Request, error) {
@@ -184,6 +255,12 @@ func (s *Store) RegisterDevice(device *Device) error {
 		}
 		return nil
 	}
+	if s.db == nil {
+		return errors.New("persistence not available")
+	}
+	if err := s.db.SaveDevice(toPersistDevice(device)); err != nil {
+		return err
+	}
 	s.device = device
 	return nil
 }
@@ -206,6 +283,12 @@ func (s *Store) RegisterDesktop(d *Desktop) error {
 			return ErrDeviceAlreadyTrusted
 		}
 		return nil
+	}
+	if s.db == nil {
+		return errors.New("persistence not available")
+	}
+	if err := s.db.SaveDesktop(toPersistDesktop(d)); err != nil {
+		return err
 	}
 	s.desktop = d
 	return nil
@@ -309,6 +392,42 @@ func (s *Store) AttachReleaseResponse(id string, resp ReleaseResponse) (*Request
 	r.DecidedAt = &now
 	cp := *r
 	return &cp, nil
+}
+
+func toPersistDevice(d *Device) *persist.TrustedDevice {
+	pubDER, _ := x509.MarshalPKIXPublicKey(d.PublicKey)
+	vaultDER, _ := x509.MarshalPKIXPublicKey(d.VaultPublicKey)
+	return &persist.TrustedDevice{
+		DeviceID:       d.DeviceID,
+		Name:           d.Name,
+		Algorithm:      d.Algorithm,
+		PublicKey:      pubDER,
+		VaultKeyID:     d.VaultKeyID,
+		VaultAlgo:      d.VaultAlgo,
+		VaultPublicKey: vaultDER,
+	}
+}
+
+func toPersistDesktop(d *Desktop) *persist.TrustedDesktop {
+	pubDER, _ := x509.MarshalPKIXPublicKey(d.PublicKey)
+	return &persist.TrustedDesktop{
+		DesktopID: d.DesktopID,
+		Name:      d.Name,
+		Algorithm: d.Algorithm,
+		PublicKey: pubDER,
+	}
+}
+
+func parseP256(der []byte) (*ecdsa.PublicKey, error) {
+	pubAny, err := x509.ParsePKIXPublicKey(der)
+	if err != nil {
+		return nil, err
+	}
+	pub, ok := pubAny.(*ecdsa.PublicKey)
+	if !ok || pub.Curve != elliptic.P256() {
+		return nil, errors.New("not a P-256 ECDSA key")
+	}
+	return pub, nil
 }
 
 func generateID() (string, error) {
