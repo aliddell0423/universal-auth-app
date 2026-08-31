@@ -198,6 +198,39 @@ This must fail and the request must remain `pending`.
 
 `desktop-agent/` is the Fedora command-line client `authctl`. It treats the broker as an untrusted relay: it never accepts `"approved"` at face value and instead verifies the Pixel's ECDSA P-256 signature itself.
 
+### Setup
+
+`authctl setup` is the idempotent entry point. It creates the config, creates the
+desktop identity, registers the desktop with the broker, installs the Firefox
+native host, and pins the Pixel once it is paired. It is safe to run repeatedly.
+
+```bash
+export BROKER_TOKEN='...'
+export VAULT_TOKEN='...'
+
+cd desktop-agent
+
+go run ./cmd/authctl setup \
+  --broker http://192.168.1.167:8080 \
+  --vault http://192.168.1.167:8081 \
+  --desktop-name "Fedora Desktop"
+```
+
+Subsequent runs need no flags; the stored endpoints are reused:
+
+```bash
+go run ./cmd/authctl setup
+```
+
+`--check` reports the current state without writing anything:
+
+```bash
+go run ./cmd/authctl setup --check
+```
+
+Setup never replaces a trusted desktop or Pixel. A mismatch is a hard failure
+that must be resolved deliberately with `authctl pair`.
+
 ### Usage
 
 ```bash

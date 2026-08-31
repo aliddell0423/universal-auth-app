@@ -23,21 +23,14 @@ REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BROKER_DIR="$REPO_ROOT/auth-broker"
 VAULT_DIR="$REPO_ROOT/vault-service"
 
+echo "==> Running full verification"
+"$REPO_ROOT/scripts/verify-all.sh"
+
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=5 -p "$AUTH_DEV_PORT")
 if [ -n "$AUTH_DEV_SSH_KEY" ]; then
     SSH_OPTS+=(-i "$AUTH_DEV_SSH_KEY")
 fi
 TARGET="$AUTH_DEV_USER@$AUTH_DEV_HOST"
-
-echo "==> Testing auth-broker"
-cd "$BROKER_DIR"
-go test ./...
-go vet ./...
-
-echo "==> Testing vault-service"
-cd "$VAULT_DIR"
-go test ./...
-go vet ./...
 
 echo "==> Building auth-broker container"
 cd "$BROKER_DIR"

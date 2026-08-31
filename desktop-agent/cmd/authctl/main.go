@@ -34,6 +34,8 @@ func main() {
 		os.Exit(exitError)
 	}
 	switch os.Args[1] {
+	case "setup":
+		setupCmd(os.Args[2:])
 	case "pair":
 		pair(os.Args[2:])
 	case "desktop-register":
@@ -51,7 +53,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: authctl <pair|desktop-register|request|inspect|doctor> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: authctl <setup|pair|desktop-register|request|inspect|doctor> [flags]")
 }
 
 func pair(args []string) {
