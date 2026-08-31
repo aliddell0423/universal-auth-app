@@ -1,4 +1,5 @@
 let pending = false;
+const shownNotifications = new Set();
 
 function findUsernameInput(passwordInput) {
   const form = passwordInput.closest('form') || passwordInput.form;
@@ -21,8 +22,6 @@ function findUsernameInput(passwordInput) {
 function fillValue(input, value) {
   const v = value || '';
 
-  // Use the native HTMLInputElement value setter so controlled
-  // components (React, etc.) observe the change as if the user typed it.
   const descriptor = Object.getOwnPropertyDescriptor(
     window.HTMLInputElement.prototype,
     'value'
@@ -45,6 +44,26 @@ function fillLogin(passwordInput, credential) {
   fillValue(passwordInput, credential.password);
 }
 
+function showNotification(response) {
+  const key = `${response.code || 'unknown'}-${response.trace_id || ''}`;
+  if (shownNotifications.has(key)) {
+    return;
+  }
+  shownNotifications.add(key);
+  if (shownNotifications.size > 10) {
+    const [first] = shownNotifications;
+    shownNotifications.delete(first);
+  }
+
+  if (typeof browser !== 'undefined' && browser.notifications) {
+    browser.notifications.create({
+      type: 'basic',
+      title: 'Universal Auth failed',
+      message: `${response.code || 'unknown'}: ${response.error || 'Unknown error'}`,
+    });
+  }
+}
+
 document.addEventListener('focusin', async (event) => {
   const target = event.target;
   if (!target || target.tagName !== 'INPUT' || target.type !== 'password') {
@@ -57,8 +76,29 @@ document.addEventListener('focusin', async (event) => {
   pending = true;
   try {
     const response = await browser.runtime.sendMessage({ type: 'credential_request' });
-    if (response && response.status === 'approved') {
+    if (!response) {
+      console.error('[Universal Auth] no response from background script');
+      return;
+    }
+
+    if (response.status === 'approved') {
       fillLogin(target, response);
+      return;
+    }
+
+    console.error('[Universal Auth] credential request failed', {
+      status: response.status,
+      code: response.code,
+      stage: response.stage,
+      traceId: response.trace_id,
+      requestId: response.request_id,
+      error: response.error,
+      retryable: response.retryable,
+      action: response.action,
+    });
+
+    if (response.status === 'error') {
+      showNotification(response);
     }
   } catch (err) {
     console.error('Universal Auth content error:', err);

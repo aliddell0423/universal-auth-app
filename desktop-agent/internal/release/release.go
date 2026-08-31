@@ -39,6 +39,7 @@ func SecureRelease(
 	ident *identity.Identity,
 	pixelVaultKeyID string,
 	brokerClient *broker.Client,
+	traceID string,
 	timeout, poll time.Duration,
 ) (*vaultcrypto.CredentialPlaintext, error) {
 	if pkg.CryptoVersion != vaultcrypto.CryptoVersion {
@@ -71,7 +72,7 @@ func SecureRelease(
 		ClientNonce: generateClientNonce(),
 	}
 
-	pending, err := brokerClient.CreateRequest(ctx, createReq)
+	pending, err := brokerClient.CreateRequest(ctx, createReq, traceID)
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +108,7 @@ func SecureRelease(
 		PackageHash:            vaultcrypto.Hash(pkg),
 		DesktopSignature:       sig,
 	}
-	if _, err := brokerClient.AttachReleaseRequest(ctx, pending.ID, attachReq); err != nil {
+	if _, err := brokerClient.AttachReleaseRequest(ctx, pending.ID, attachReq, traceID); err != nil {
 		return nil, err
 	}
 
@@ -121,7 +122,7 @@ func SecureRelease(
 		case <-pollCtx.Done():
 			return nil, fmt.Errorf("timeout")
 		case <-ticker.C:
-			result, err := brokerClient.GetRequest(ctx, pending.ID)
+			result, err := brokerClient.GetRequest(ctx, pending.ID, traceID)
 			if err != nil {
 				return nil, err
 			}

@@ -61,7 +61,7 @@ func TestCredentialExists(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(srv.URL, "test-token")
-	exists, err := c.CredentialExists(context.Background(), "https://github.com")
+	exists, err := c.CredentialExists(context.Background(), "https://github.com", "")
 	if err != nil {
 		t.Fatalf("exists: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestCredentialExists(t *testing.T) {
 		t.Fatal("expected exists")
 	}
 
-	exists, _ = c.CredentialExists(context.Background(), "https://other.com")
+	exists, _ = c.CredentialExists(context.Background(), "https://other.com", "")
 	if exists {
 		t.Fatal("did not expect exists")
 	}
@@ -80,7 +80,7 @@ func TestGetPackage(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(srv.URL, "test-token")
-	pkg, err := c.GetPackage(context.Background(), "https://github.com")
+	pkg, err := c.GetPackage(context.Background(), "https://github.com", "")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestGetPackage(t *testing.T) {
 		t.Fatalf("got %v", pkg)
 	}
 
-	_, err = c.GetPackage(context.Background(), "https://missing.com")
+	_, err = c.GetPackage(context.Background(), "https://missing.com", "")
 	if err != ErrNotFound {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
@@ -103,7 +103,7 @@ func TestClientUsesContext(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := c.CredentialExists(ctx, "https://github.com")
+	_, err := c.CredentialExists(ctx, "https://github.com", "")
 	if err == nil {
 		t.Fatal("expected context error")
 	}
@@ -116,12 +116,13 @@ func TestClientServerError(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(srv.URL, "test-token")
-	_, err := c.CredentialExists(context.Background(), "https://example.com")
+	_, err := c.CredentialExists(context.Background(), "https://example.com", "")
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if err.Error() != fmt.Sprintf("HTTP %d", http.StatusInternalServerError) {
-		t.Fatalf("unexpected error: %v", err)
+	want := fmt.Sprintf("HTTP %d", http.StatusInternalServerError)
+	if err.Error() == want {
+		t.Fatalf("error should include body, got: %v", err)
 	}
 }
 
@@ -145,7 +146,7 @@ func TestCreatePackage(t *testing.T) {
 		CryptoVersion:          2,
 	}
 	c := NewClient(srv.URL, "test-token")
-	if err := c.CreatePackage(context.Background(), pkg); err != nil {
+	if err := c.CreatePackage(context.Background(), pkg, ""); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 }

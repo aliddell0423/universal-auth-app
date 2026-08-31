@@ -9,7 +9,8 @@
     }
   },
   "permissions": [
-    "nativeMessaging"
+    "nativeMessaging",
+    "notifications"
   ],
   "host_permissions": [
     "http://*/*",

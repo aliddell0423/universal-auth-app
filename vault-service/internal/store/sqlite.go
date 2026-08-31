@@ -18,10 +18,20 @@ import (
 	"vault-service/internal/model"
 )
 
-var ErrNotFound = errors.New("credential not found")
+var (
+	ErrNotFound           = errors.New("credential not found")
+	ErrIncompatibleSchema = errors.New("UA-VAULT-001: vault database schema is incompatible with this version; run 'authctl doctor' for repair instructions")
+	currentSchemaVersion  = 1
+	requiredColumns       = []string{
+		"id", "origin", "ciphertext", "cipher_nonce", "wrapped_dek",
+		"wrap_nonce", "wrap_ephemeral_public_key", "pixel_vault_key_id",
+		"crypto_version", "created_at", "updated_at",
+	}
+)
 
 type DB struct {
-	db *sql.DB
+	db           *sql.DB
+	incompatible bool
 }
 
 func Open(path string) (*DB, error) {
@@ -32,27 +42,72 @@ func Open(path string) (*DB, error) {
 	if err := db.Ping(); err != nil {
 		return nil, err
 	}
-	if err := applyMigrations(db); err != nil {
+	incompatible, err := applyMigrations(db)
+	if err != nil {
 		return nil, err
 	}
-	return &DB{db: db}, nil
+	return &DB{db: db, incompatible: incompatible}, nil
 }
 
 func (d *DB) Close() error {
 	return d.db.Close()
 }
 
-func applyMigrations(db *sql.DB) error {
-	var version int
-	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+// Ready reports whether the database is currently usable by this version.
+func (d *DB) Ready() error {
+	if d.incompatible {
+		return ErrIncompatibleSchema
+	}
+	if err := d.db.Ping(); err != nil {
 		return err
 	}
-	if version >= 1 {
-		return nil
-	}
-	_, err := db.Exec(`
-		DROP TABLE IF EXISTS credentials;
+	return validateSchema(d.db)
+}
 
+func applyMigrations(db *sql.DB) (bool, error) {
+	var version int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		return false, err
+	}
+	if version >= currentSchemaVersion {
+		return false, nil
+	}
+
+	var n int
+	err := db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='credentials'").Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	if n == 0 {
+		return false, createSchema(db)
+	}
+
+	columns, err := getColumns(db, "credentials")
+	if err != nil {
+		return false, err
+	}
+	if hasAll(columns, requiredColumns) {
+		_, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", currentSchemaVersion))
+		return false, err
+	}
+
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM credentials").Scan(&count); err != nil {
+		return false, err
+	}
+	if count == 0 {
+		if _, err := db.Exec("DROP TABLE credentials"); err != nil {
+			return false, err
+		}
+		return false, createSchema(db)
+	}
+
+	// Non-empty legacy database that cannot be safely migrated. Leave it untouched.
+	return true, nil
+}
+
+func createSchema(db *sql.DB) error {
+	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS credentials (
 			id TEXT PRIMARY KEY,
 			origin TEXT NOT NULL UNIQUE,
@@ -70,8 +125,55 @@ func applyMigrations(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	_, err = db.Exec("PRAGMA user_version = 1")
+	_, err = db.Exec(fmt.Sprintf("PRAGMA user_version = %d", currentSchemaVersion))
 	return err
+}
+
+func validateSchema(db *sql.DB) error {
+	var version int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		return err
+	}
+	if version != currentSchemaVersion {
+		return ErrIncompatibleSchema
+	}
+	columns, err := getColumns(db, "credentials")
+	if err != nil {
+		return err
+	}
+	if !hasAll(columns, requiredColumns) {
+		return ErrIncompatibleSchema
+	}
+	return nil
+}
+
+func getColumns(db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	cols := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull, pk int
+		var dflt interface{}
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		cols[name] = true
+	}
+	return cols, rows.Err()
+}
+
+func hasAll(have map[string]bool, want []string) bool {
+	for _, c := range want {
+		if !have[c] {
+			return false
+		}
+	}
+	return true
 }
 
 func (d *DB) CreateCredential(ctx context.Context, in model.CredentialPackageInput) (model.CredentialPackage, error) {

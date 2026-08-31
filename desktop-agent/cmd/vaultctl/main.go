@@ -138,7 +138,7 @@ func add(args []string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := vaultClient.CreatePackage(ctx, pkg); err != nil {
+	if err := vaultClient.CreatePackage(ctx, pkg, ""); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
@@ -196,7 +196,7 @@ func del(args []string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := vaultClient.DeletePackage(ctx, *id); err != nil {
+	if err := vaultClient.DeletePackage(ctx, *id, ""); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}

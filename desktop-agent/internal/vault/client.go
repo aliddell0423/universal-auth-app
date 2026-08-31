@@ -5,12 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"time"
 
+	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/apierror"
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/vaultcrypto"
 )
 
@@ -34,7 +34,7 @@ func NewClient(baseURL, token string) *Client {
 	}
 }
 
-func (c *Client) do(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
+func (c *Client) do(ctx context.Context, method, path string, body []byte, traceID string) (*http.Response, error) {
 	var bodyR io.Reader
 	if body != nil {
 		bodyR = bytes.NewReader(body)
@@ -44,21 +44,24 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) (*htt
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
+	if traceID != "" {
+		req.Header.Set("X-Universal-Auth-Trace-ID", traceID)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	return c.client.Do(req)
 }
 
-func (c *Client) CredentialExists(ctx context.Context, origin string) (bool, error) {
+func (c *Client) CredentialExists(ctx context.Context, origin, traceID string) (bool, error) {
 	u := "/v1/credentials/exists?origin=" + url.QueryEscape(origin)
-	resp, err := c.do(ctx, http.MethodGet, u, nil)
+	resp, err := c.do(ctx, http.MethodGet, u, nil, traceID)
 	if err != nil {
 		return false, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return false, apierror.FromResponse(resp, "vault.exists", "UA-VAULT-004")
 	}
 	var out ExistsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
@@ -67,9 +70,9 @@ func (c *Client) CredentialExists(ctx context.Context, origin string) (bool, err
 	return out.Exists, nil
 }
 
-func (c *Client) GetPackage(ctx context.Context, origin string) (*vaultcrypto.Package, error) {
+func (c *Client) GetPackage(ctx context.Context, origin, traceID string) (*vaultcrypto.Package, error) {
 	u := "/v1/credentials/package?origin=" + url.QueryEscape(origin)
-	resp, err := c.do(ctx, http.MethodGet, u, nil)
+	resp, err := c.do(ctx, http.MethodGet, u, nil, traceID)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +81,7 @@ func (c *Client) GetPackage(ctx context.Context, origin string) (*vaultcrypto.Pa
 		return nil, ErrNotFound
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, apierror.FromResponse(resp, "vault.package_fetch", "UA-VAULT-004")
 	}
 	var pkg vaultcrypto.Package
 	if err := json.NewDecoder(resp.Body).Decode(&pkg); err != nil {
@@ -87,30 +90,30 @@ func (c *Client) GetPackage(ctx context.Context, origin string) (*vaultcrypto.Pa
 	return &pkg, nil
 }
 
-func (c *Client) CreatePackage(ctx context.Context, pkg *vaultcrypto.Package) error {
+func (c *Client) CreatePackage(ctx context.Context, pkg *vaultcrypto.Package, traceID string) error {
 	body, err := json.Marshal(pkg)
 	if err != nil {
 		return err
 	}
-	resp, err := c.do(ctx, http.MethodPost, "/v1/credentials", body)
+	resp, err := c.do(ctx, http.MethodPost, "/v1/credentials", body, traceID)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
+		return apierror.FromResponse(resp, "vault.package_create", "UA-VAULT-005")
 	}
 	return nil
 }
 
-func (c *Client) DeletePackage(ctx context.Context, id string) error {
-	resp, err := c.do(ctx, http.MethodDelete, "/v1/credentials/"+id, nil)
+func (c *Client) DeletePackage(ctx context.Context, id, traceID string) error {
+	resp, err := c.do(ctx, http.MethodDelete, "/v1/credentials/"+id, nil, traceID)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
+		return apierror.FromResponse(resp, "vault.package_delete", "UA-VAULT-006")
 	}
 	return nil
 }

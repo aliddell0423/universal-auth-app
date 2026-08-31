@@ -30,6 +30,7 @@ func NewServer(db *store.DB, token string) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc("/readyz", s.handleReady)
 	mux.HandleFunc("/v1/credentials", s.handleCredentials)
 	mux.HandleFunc("/v1/credentials/exists", s.handleExists)
 	mux.HandleFunc("/v1/credentials/package", s.handlePackage)
@@ -40,6 +41,34 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if err := s.store.Ready(); err != nil {
+		if errors.Is(err, store.ErrIncompatibleSchema) {
+			writeJSON(w, http.StatusServiceUnavailable, model.NewApiError(
+				"UA-VAULT-001",
+				"vault.readyz",
+				"Vault storage schema is incompatible with this version. The existing database must be migrated or recreated.",
+				"Run 'authctl doctor' for repair instructions.",
+				false,
+			))
+			return
+		}
+		writeJSON(w, http.StatusServiceUnavailable, model.NewApiError(
+			"UA-VAULT-004",
+			"vault.readyz",
+			"Vault storage is not ready: "+err.Error(),
+			"Check the vault service logs and run 'authctl doctor'.",
+			false,
+		))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

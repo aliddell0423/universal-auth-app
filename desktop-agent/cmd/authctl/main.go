@@ -74,7 +74,7 @@ func pair(args []string) {
 	defer cancel()
 
 	client := broker.NewClient(*brokerURL, token)
-	td, err := client.GetTrustedDevice(ctx)
+	td, err := client.GetTrustedDevice(ctx, "")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(exitError)
@@ -190,7 +190,7 @@ func desktopRegister(args []string) {
 		Name:      *name,
 		Algorithm: "ECDSA_P256_SHA256",
 		PublicKey: ident.PublicKey(),
-	}); err != nil {
+	}, ""); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(exitError)
 	}

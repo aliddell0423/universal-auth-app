@@ -6,8 +6,10 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -156,4 +158,76 @@ func TestLegacyCryptoVersion(t *testing.T) {
 
 func isNotFound(err error) bool {
 	return err == ErrNotFound
+}
+
+func TestReadyAfterCreate(t *testing.T) {
+	db := tempDB(t)
+	defer db.Close()
+	if err := db.Ready(); err != nil {
+		t.Fatalf("ready: %v", err)
+	}
+}
+
+func TestIncompatibleLegacyDB(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	_, _ = db.Exec(`
+		CREATE TABLE credentials (
+			id TEXT PRIMARY KEY,
+			origin TEXT NOT NULL UNIQUE,
+			username TEXT NOT NULL,
+			password TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		);
+	`)
+	_, _ = db.Exec(`
+		INSERT INTO credentials (id, origin, username, password, created_at)
+		VALUES ('1', 'https://github.com', 'user', 'pass', '2026-01-01T00:00:00Z');
+	`)
+
+	store := &DB{db: db}
+	if err := store.Ready(); !errors.Is(err, ErrIncompatibleSchema) {
+		t.Fatalf("expected ErrIncompatibleSchema, got %v", err)
+	}
+
+	// Verify data was not dropped.
+	var n int
+	if err := db.QueryRow("SELECT COUNT(*) FROM credentials").Scan(&n); err != nil || n != 1 {
+		t.Fatalf("legacy data not preserved: %v / %d", err, n)
+	}
+	db.Close()
+}
+
+func TestEmptyLegacyDBUpgraded(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	_, _ = db.Exec(`
+		CREATE TABLE credentials (
+			id TEXT PRIMARY KEY,
+			origin TEXT NOT NULL UNIQUE,
+			username TEXT NOT NULL,
+			password TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		);
+	`)
+
+	incompat, err := applyMigrations(db)
+	if err != nil || incompat {
+		t.Fatalf("applyMigrations: %v / %v", incompat, err)
+	}
+
+	store := &DB{db: db}
+	if err := store.Ready(); err != nil {
+		t.Fatalf("ready: %v", err)
+	}
+
+	var version int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != currentSchemaVersion {
+		t.Fatalf("schema version not set: %v / %d", err, version)
+	}
+	db.Close()
 }

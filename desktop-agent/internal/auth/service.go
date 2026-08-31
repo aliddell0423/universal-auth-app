@@ -49,7 +49,7 @@ func (s *Service) Authenticate(ctx context.Context, req Request, poll time.Durat
 		ClientNonce: clientNonce,
 	}
 
-	pending, err := s.Client.CreateRequest(ctx, createReq)
+	pending, err := s.Client.CreateRequest(ctx, createReq, "")
 	if err != nil {
 		return Result{}, err
 	}
@@ -76,7 +76,7 @@ func (s *Service) Authenticate(ctx context.Context, req Request, poll time.Durat
 		case <-ctx.Done():
 			return Result{Status: StatusTimeout}, ctx.Err()
 		case <-ticker.C:
-			result, err := s.Client.GetRequest(ctx, pending.ID)
+			result, err := s.Client.GetRequest(ctx, pending.ID, "")
 			if err != nil {
 				return Result{}, err
 			}

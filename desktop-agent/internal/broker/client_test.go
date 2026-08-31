@@ -66,7 +66,7 @@ func TestClientGetTrustedDevice(t *testing.T) {
 	srv := newTestServer()
 	defer srv.Close()
 	c := NewClient(srv.URL, "test-token")
-	td, err := c.GetTrustedDevice(context.Background())
+	td, err := c.GetTrustedDevice(context.Background(), "")
 	if err != nil {
 		t.Fatalf("get trusted device: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestClientCreateRequest(t *testing.T) {
 		Resource:    "desktop-test",
 		Message:     "hi",
 		ClientNonce: "bm9uY2U",
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("create request: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestClientUnauthorized(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewClient(srv.URL, "wrong-token")
-	_, err := c.GetTrustedDevice(context.Background())
+	_, err := c.GetTrustedDevice(context.Background(), "")
 	if err == nil {
 		t.Fatal("expected error for unauthorized")
 	}
