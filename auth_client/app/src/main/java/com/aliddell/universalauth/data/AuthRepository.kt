@@ -19,7 +19,21 @@ interface AuthRepository {
     suspend fun submitSignedApproval(id: String, deviceId: String, signature: String): Result<AuthRequest>
     suspend fun submitReleaseResponse(id: String, response: ReleaseResponse): Result<AuthRequest>
     suspend fun submitDenial(id: String): Result<AuthRequest>
+    suspend fun getRequest(id: String): Result<AuthRequest>
+    suspend fun registerPushInstallation(registration: PushRegistration): Result<Unit>
 }
+
+/**
+ * A delivery address for an already-trusted device. The installation ID is not
+ * an identity: the Pixel's hardware-backed key fingerprint remains the only
+ * trust anchor, and the broker rejects any device_id it does not already trust.
+ */
+@kotlinx.serialization.Serializable
+data class PushRegistration(
+    val device_id: String,
+    val provider: String = "fcm",
+    val installation_id: String
+)
 
 @kotlinx.serialization.Serializable
 data class DeviceRegistrationWithVault(
@@ -191,6 +205,43 @@ class DefaultAuthRepository(
                 }
                 val responseBody = response.body.string()
                 json.decodeFromString<AuthRequest>(responseBody)
+            }
+        }
+    }
+
+    override suspend fun getRequest(id: String): Result<AuthRequest> = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("$baseUrl/v1/requests/$id")
+            .header("Authorization", "Bearer $token")
+            .build()
+        runCatching {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    val body = response.body.string()
+                    handleError(response.code, body, "broker.request_fetch")
+                }
+                json.decodeFromString<AuthRequest>(response.body.string())
+            }
+        }
+    }
+
+    override suspend fun registerPushInstallation(
+        registration: PushRegistration
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val payload = json.encodeToString(registration)
+        val body = payload.toRequestBody(mediaType)
+        val request = Request.Builder()
+            .url("$baseUrl/v1/devices/push-registration")
+            .put(body)
+            .header("Authorization", "Bearer $token")
+            .header("Content-Type", "application/json")
+            .build()
+        runCatching {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    val body = response.body.string()
+                    handleError(response.code, body, "broker.push_registration")
+                }
             }
         }
     }

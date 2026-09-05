@@ -11,6 +11,8 @@ import com.aliddell.universalauth.data.AuthRepository
 import com.aliddell.universalauth.data.AuthRequest
 import com.aliddell.universalauth.data.DeviceRegistrationWithVault
 import com.aliddell.universalauth.data.OperationError
+import com.aliddell.universalauth.data.PushInstallationStore
+import com.aliddell.universalauth.data.PushRegistration
 import com.aliddell.universalauth.data.ReleaseRequest
 import com.aliddell.universalauth.data.ReleaseResponse
 import com.aliddell.universalauth.data.ReleaseStage
@@ -22,7 +24,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Base64
 
-class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
+class AuthViewModel(
+    private val repository: AuthRepository,
+    private val pushStore: PushInstallationStore? = null
+) : ViewModel() {
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState
 
@@ -85,12 +90,36 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
                     deviceRegistered = true,
                     error = null
                 )
+                // Trust now exists, so a deferred push registration can succeed.
+                retryPushRegistration(deviceId)
             } else {
                 _uiState.value = _uiState.value.copy(
                     loading = false,
                     deviceRegistered = false,
                     error = result.exceptionOrNull()?.message
                 )
+            }
+        }
+    }
+
+    /**
+     * Sends a cached Firebase installation ID to the broker.
+     *
+     * Firebase usually produces an installation ID before the Pixel is paired,
+     * so the initial attempt from [UniversalAuthMessagingService] is expected to
+     * be rejected. This retry runs once the broker trusts this device.
+     */
+    private fun retryPushRegistration(deviceId: String) {
+        val store = pushStore ?: return
+        if (!store.needsRegistration()) return
+        val installationId = store.installationId ?: return
+        viewModelScope.launch {
+            val result = repository.registerPushInstallation(
+                PushRegistration(device_id = deviceId, installation_id = installationId)
+            )
+            if (result.isSuccess) {
+                store.registeredInstallationId = installationId
+                _uiState.value = _uiState.value.copy(pushRegistered = true)
             }
         }
     }
@@ -260,14 +289,18 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
         val trustedDesktop: TrustedDesktop? = null,
         val error: String? = null,
         val releaseStage: ReleaseStage = ReleaseStage.IDLE,
-        val releaseError: OperationError? = null
+        val releaseError: OperationError? = null,
+        val pushRegistered: Boolean = false
     )
 
-    class Factory(private val repository: AuthRepository) : ViewModelProvider.Factory {
+    class Factory(
+        private val repository: AuthRepository,
+        private val pushStore: PushInstallationStore? = null
+    ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
             if (modelClass.isAssignableFrom(AuthViewModel::class.java)) {
-                return AuthViewModel(repository) as T
+                return AuthViewModel(repository, pushStore) as T
             }
             throw IllegalArgumentException("Unknown ViewModel class")
         }

@@ -99,6 +99,14 @@ type Desktop struct {
 	PublicKey *ecdsa.PublicKey
 }
 
+// PushTarget is a delivery address for a trusted device, not an identity.
+type PushTarget struct {
+	DeviceID       string
+	Provider       string
+	InstallationID string
+	UpdatedAt      string
+}
+
 var (
 	ErrRequestNotFound         = errors.New("request not found")
 	ErrInvalidDecision         = errors.New("invalid decision value")
@@ -292,6 +300,51 @@ func (s *Store) RegisterDesktop(d *Desktop) error {
 	}
 	s.desktop = d
 	return nil
+}
+
+// SetPushRegistration records push delivery addressing for the trusted device.
+// The device ID must match the currently trusted device: the installation ID is
+// only an address, so it can never introduce or change trust.
+func (s *Store) SetPushRegistration(deviceID, provider, installationID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.device == nil {
+		return ErrDeviceNotFound
+	}
+	if s.device.DeviceID != deviceID {
+		return ErrDeviceMismatch
+	}
+	if s.db == nil {
+		return errors.New("persistence not available")
+	}
+	return s.db.SavePushRegistration(&persist.PushRegistration{
+		DeviceID:       deviceID,
+		Provider:       provider,
+		InstallationID: installationID,
+	})
+}
+
+// PushRegistration returns the push addressing for the trusted device, or nil
+// when the device has not registered for push delivery.
+func (s *Store) PushRegistration() (*PushTarget, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.device == nil {
+		return nil, nil
+	}
+	if s.db == nil {
+		return nil, nil
+	}
+	pr, err := s.db.LoadPushRegistration(s.device.DeviceID)
+	if err != nil || pr == nil {
+		return nil, err
+	}
+	return &PushTarget{
+		DeviceID:       pr.DeviceID,
+		Provider:       pr.Provider,
+		InstallationID: pr.InstallationID,
+		UpdatedAt:      pr.UpdatedAt,
+	}, nil
 }
 
 func (s *Store) TrustedDesktop() *Desktop {

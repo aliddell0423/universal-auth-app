@@ -37,6 +37,7 @@ import com.aliddell.universalauth.crypto.VaultKeyManager
 import com.aliddell.universalauth.crypto.buildSigningPayload
 import com.aliddell.universalauth.data.AuthRequest
 import com.aliddell.universalauth.data.DefaultAuthRepository
+import com.aliddell.universalauth.data.PushInstallationStore
 import com.aliddell.universalauth.data.ReleaseStage
 import android.Manifest
 import android.content.pm.PackageManager
@@ -49,7 +50,7 @@ import java.util.Base64
 class MainActivity : FragmentActivity() {
 
     private val authViewModel: AuthViewModel by viewModels {
-        AuthViewModel.Factory(DefaultAuthRepository())
+        AuthViewModel.Factory(DefaultAuthRepository(), PushInstallationStore(applicationContext))
     }
 
     private val keyManager = ApprovalKeyManager()

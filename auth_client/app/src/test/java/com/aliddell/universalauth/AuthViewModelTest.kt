@@ -3,6 +3,7 @@ package com.aliddell.universalauth
 import com.aliddell.universalauth.data.AuthRepository
 import com.aliddell.universalauth.data.AuthRequest
 import com.aliddell.universalauth.data.DeviceRegistrationWithVault
+import com.aliddell.universalauth.data.PushRegistration
 import com.aliddell.universalauth.data.ReleaseResponse
 import com.aliddell.universalauth.data.TrustedDesktop
 import kotlinx.coroutines.Dispatchers
@@ -121,8 +122,24 @@ class AuthViewModelTest {
 
     private class FakeAuthRepository(
         private val requests: List<AuthRequest> = emptyList(),
-        private val throwHealth: Boolean = false
+        private val throwHealth: Boolean = false,
+        private val pushRegistrationSucceeds: Boolean = true
     ) : AuthRepository {
+        var pushRegistrations = mutableListOf<PushRegistration>()
+
+        override suspend fun getRequest(id: String): Result<AuthRequest> =
+            requests.firstOrNull { it.id == id }
+                ?.let { Result.success(it) }
+                ?: Result.failure(Exception("not found"))
+
+        override suspend fun registerPushInstallation(
+            registration: PushRegistration
+        ): Result<Unit> {
+            pushRegistrations.add(registration)
+            return if (pushRegistrationSucceeds) Result.success(Unit)
+            else Result.failure(Exception("no trusted device"))
+        }
+
         override suspend fun checkHealth(): Result<String> =
             if (throwHealth) Result.failure(Exception("network"))
             else Result.success("{\"status\":\"ok\"}")

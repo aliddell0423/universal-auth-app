@@ -17,7 +17,7 @@ import (
 var (
 	ErrCorruptDevice  = errors.New("persisted trusted device is corrupt or inconsistent")
 	ErrCorruptDesktop = errors.New("persisted trusted desktop is corrupt or inconsistent")
-	currentVersion    = 1
+	currentVersion    = 2
 )
 
 type TrustedDevice struct {
@@ -39,6 +39,17 @@ type TrustedDesktop struct {
 	PublicKey []byte
 	CreatedAt string
 	UpdatedAt string
+}
+
+// PushRegistration is where the broker can deliver a notification for a device.
+// The installation ID is not an identity; the device's cryptographic key
+// fingerprint remains the only trust anchor.
+type PushRegistration struct {
+	DeviceID       string
+	Provider       string
+	InstallationID string
+	CreatedAt      string
+	UpdatedAt      string
 }
 
 type DB struct {
@@ -99,8 +110,29 @@ func migrate(db *sql.DB) error {
 		return fmt.Errorf("broker schema version %d is newer than supported %d", v, currentVersion)
 	}
 
-	// Fresh or legacy in-memory only database.
-	_, err := db.Exec(`
+	// Migrations are applied incrementally so an existing database keeps its
+	// trusted device and desktop rows.
+	if v < 1 {
+		if err := migrateV1(db); err != nil {
+			return err
+		}
+		if err := recordVersion(db, 1); err != nil {
+			return err
+		}
+	}
+	if v < 2 {
+		if err := migrateV2(db); err != nil {
+			return err
+		}
+		if err := recordVersion(db, 2); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateV1(db *sql.DB) error {
+	if _, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS trusted_device (
 			device_id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
@@ -112,11 +144,10 @@ func migrate(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)
-	`)
-	if err != nil {
+	`); err != nil {
 		return err
 	}
-	_, err = db.Exec(`
+	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS trusted_desktop (
 			desktop_id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
@@ -126,12 +157,27 @@ func migrate(db *sql.DB) error {
 			updated_at TEXT NOT NULL
 		)
 	`)
-	if err != nil {
-		return err
-	}
+	return err
+}
 
+// migrateV2 adds push delivery addressing. The installation ID is only an
+// address for notifications; it is never a trust anchor.
+func migrateV2(db *sql.DB) error {
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS push_registration (
+			device_id TEXT PRIMARY KEY,
+			provider TEXT NOT NULL,
+			installation_id TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)
+	`)
+	return err
+}
+
+func recordVersion(db *sql.DB, version int) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err = db.Exec("INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES (?, ?)", currentVersion, now)
+	_, err := db.Exec("INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES (?, ?)", version, now)
 	return err
 }
 
@@ -241,5 +287,44 @@ func (d *DB) SaveDesktop(td *TrustedDesktop) error {
 		INSERT INTO trusted_desktop (desktop_id, name, algorithm, public_key_der, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?)
 	`, td.DesktopID, td.Name, td.Algorithm, td.PublicKey, now, now)
+	return err
+}
+
+// SavePushRegistration records where the broker can reach a trusted device.
+// The installation ID is delivery addressing only and carries no trust.
+func (d *DB) SavePushRegistration(pr *PushRegistration) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := d.db.Exec(`
+		INSERT INTO push_registration (device_id, provider, installation_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(device_id) DO UPDATE SET
+			provider = excluded.provider,
+			installation_id = excluded.installation_id,
+			updated_at = excluded.updated_at
+	`, pr.DeviceID, pr.Provider, pr.InstallationID, now, now)
+	return err
+}
+
+// LoadPushRegistration returns the push registration for a device, or nil when
+// the device has not registered for push delivery.
+func (d *DB) LoadPushRegistration(deviceID string) (*PushRegistration, error) {
+	var pr PushRegistration
+	err := d.db.QueryRow(`
+		SELECT device_id, provider, installation_id, created_at, updated_at
+		FROM push_registration
+		WHERE device_id = ?
+	`, deviceID).Scan(&pr.DeviceID, &pr.Provider, &pr.InstallationID, &pr.CreatedAt, &pr.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &pr, nil
+}
+
+// DeletePushRegistration removes push addressing for a device.
+func (d *DB) DeletePushRegistration(deviceID string) error {
+	_, err := d.db.Exec("DELETE FROM push_registration WHERE device_id = ?", deviceID)
 	return err
 }

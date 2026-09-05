@@ -56,6 +56,22 @@ type TrustedDesktopResponse struct {
 	PublicKey string `json:"public_key"`
 }
 
+// PushRegistrationRequest carries a delivery address for an already-trusted
+// device. It is not a registration of identity.
+type PushRegistrationRequest struct {
+	DeviceID       string `json:"device_id"`
+	Provider       string `json:"provider"`
+	InstallationID string `json:"installation_id"`
+}
+
+// PushRegistrationResponse never echoes the installation ID back to clients.
+type PushRegistrationResponse struct {
+	DeviceID   string `json:"device_id"`
+	Provider   string `json:"provider"`
+	Registered bool   `json:"registered"`
+	UpdatedAt  string `json:"updated_at,omitempty"`
+}
+
 func newServer(store *Store, token string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", handleHealth)
@@ -65,6 +81,7 @@ func newServer(store *Store, token string) http.Handler {
 	mux.HandleFunc("/v1/requests", func(w http.ResponseWriter, r *http.Request) { handleCreate(w, r, store) })
 	mux.HandleFunc("/v1/devices/register", func(w http.ResponseWriter, r *http.Request) { handleRegisterDevice(w, r, store) })
 	mux.HandleFunc("/v1/devices/trusted", func(w http.ResponseWriter, r *http.Request) { handleGetTrustedDevice(w, r, store) })
+	mux.HandleFunc("/v1/devices/push-registration", func(w http.ResponseWriter, r *http.Request) { handlePushRegistration(w, r, store) })
 	mux.HandleFunc("/v1/desktops", func(w http.ResponseWriter, r *http.Request) { handleDesktops(w, r, store) })
 	mux.HandleFunc("/v1/desktops/trusted", func(w http.ResponseWriter, r *http.Request) { handleGetTrustedDesktop(w, r, store) })
 	return authMiddleware(mux, token)
@@ -316,6 +333,65 @@ func handleGetTrustedDevice(w http.ResponseWriter, r *http.Request, store *Store
 		VaultAlgorithm: dev.VaultAlgo,
 		VaultPublicKey: base64.StdEncoding.EncodeToString(vaultDER),
 	})
+}
+
+// handlePushRegistration stores or returns the notification address for the
+// trusted device. The installation ID is delivery addressing only; the device's
+// key fingerprint remains the sole trust anchor, so this endpoint can never
+// establish or change trust.
+func handlePushRegistration(w http.ResponseWriter, r *http.Request, store *Store) {
+	switch r.Method {
+	case http.MethodPut:
+	case http.MethodGet:
+		target, err := store.PushRegistration()
+		if err != nil {
+			writeApiError(w, http.StatusInternalServerError, "UA-BROKER-005", "broker.push_registration", "Failed to read push registration.", "Check the broker logs.", false)
+			return
+		}
+		if target == nil {
+			writeApiError(w, http.StatusNotFound, "UA-PUSH-001", "broker.push_registration", "no push registration for the trusted device", "Open the Universal Auth app on the Pixel.", false)
+			return
+		}
+		writeJSON(w, http.StatusOK, PushRegistrationResponse{
+			DeviceID:   target.DeviceID,
+			Provider:   target.Provider,
+			Registered: true,
+			UpdatedAt:  target.UpdatedAt,
+		})
+		return
+	default:
+		writeApiError(w, http.StatusMethodNotAllowed, "UA-BROKER-007", "broker.push_registration", "method not allowed", "Use PUT or GET.", false)
+		return
+	}
+
+	var reg PushRegistrationRequest
+	if err := decodeJSON(w, r, &reg); err != nil {
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.push_registration", "malformed or invalid JSON", "Check the request body.", false)
+		return
+	}
+	if reg.DeviceID == "" || reg.Provider == "" || reg.InstallationID == "" {
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.push_registration", "missing required fields", "Provide device_id, provider and installation_id.", false)
+		return
+	}
+	if reg.Provider != "fcm" {
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.push_registration", "unsupported push provider", "Use 'fcm'.", false)
+		return
+	}
+
+	if err := store.SetPushRegistration(reg.DeviceID, reg.Provider, reg.InstallationID); err != nil {
+		switch {
+		case errors.Is(err, ErrDeviceNotFound):
+			writeApiError(w, http.StatusForbidden, "UA-BROKER-001", "broker.push_registration", "no trusted device registered", "Run 'authctl pair' first.", false)
+		case errors.Is(err, ErrDeviceMismatch):
+			writeApiError(w, http.StatusForbidden, "UA-BROKER-001", "broker.push_registration", "device_id does not match the trusted device", "Pair this Pixel before registering for push.", false)
+		default:
+			writeApiError(w, http.StatusInternalServerError, "UA-BROKER-005", "broker.push_registration", "Failed to store push registration.", "Check the broker logs.", false)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	// Never log the installation ID itself.
+	log.Printf("[device=%s] push registration updated provider=%s", reg.DeviceID, reg.Provider)
 }
 
 func handleDesktops(w http.ResponseWriter, r *http.Request, store *Store) {

@@ -113,11 +113,39 @@ PC retrieves approved status
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| GET | `/healthz` | none | Health check |
+| GET | `/healthz` | none | Process liveness |
+| GET | `/readyz` | none | Readiness, including persisted trust validation |
 | POST | `/v1/requests` | Bearer | Create a request |
 | GET | `/v1/requests/pending` | Bearer | List pending requests |
 | GET | `/v1/requests/{id}` | Bearer | Get a request |
 | POST | `/v1/requests/{id}/decision` | Bearer | Approve or deny a request |
+| POST | `/v1/devices/register` | Bearer | Register the trusted Pixel |
+| GET | `/v1/devices/trusted` | Bearer | Get the trusted Pixel |
+| PUT | `/v1/devices/push-registration` | Bearer | Set push delivery address for the trusted Pixel |
+| GET | `/v1/devices/push-registration` | Bearer | Report whether push delivery is registered |
+| POST | `/v1/desktops` | Bearer | Register the trusted desktop |
+| GET | `/v1/desktops/trusted` | Bearer | Get the trusted desktop |
+
+### Push registration
+
+`PUT /v1/devices/push-registration` records where the broker can deliver a
+notification:
+
+```json
+{
+  "device_id": "<existing trusted Pixel fingerprint>",
+  "provider": "fcm",
+  "installation_id": "<Firebase installation ID>"
+}
+```
+
+The installation ID is **not** an identity. The Pixel's hardware-backed key
+fingerprint remains the only trust anchor, so:
+
+- The broker rejects any `device_id` it does not already trust (HTTP 403).
+- Push registration can never create or change trust.
+- `GET` reports only `registered: true/false`; the installation ID is never
+  echoed back to a client, and it is never written to the broker logs.
 
 ## Environment variables
 
