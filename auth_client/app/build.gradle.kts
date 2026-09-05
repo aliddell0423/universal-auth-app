@@ -4,6 +4,8 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.compose.compiler)
     alias(libs.plugins.kotlin.serialization)
+
+    id("com.google.gms.google-services")
 }
 
 val localProperties = Properties().apply {
@@ -59,6 +61,14 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.material)
     implementation(libs.androidx.biometric)
+    debugImplementation(libs.compose.ui.tooling)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.junit)
+
+    // Firebase
+    implementation(platform("com.google.firebase:firebase-bom:34.18.0"))
+    implementation("com.google.firebase:firebase-messaging")
+
     debugImplementation(libs.compose.ui.tooling)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.junit)

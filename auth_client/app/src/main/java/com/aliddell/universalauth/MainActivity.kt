@@ -38,7 +38,12 @@ import com.aliddell.universalauth.crypto.buildSigningPayload
 import com.aliddell.universalauth.data.AuthRequest
 import com.aliddell.universalauth.data.DefaultAuthRepository
 import com.aliddell.universalauth.data.ReleaseStage
-import java.security.Signature
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import android.util.Log
+import androidx.core.app.ActivityCompat
+import com.google.firebase.messaging.FirebaseMessaging
 import java.util.Base64
 
 class MainActivity : FragmentActivity() {
@@ -121,6 +126,20 @@ class MainActivity : FragmentActivity() {
             })
 
         try {
+            if (
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                    1001
+                )
+            }
+
             keyManager.ensureKey()
             val (vaultKeyId, vaultPublic) = if (vaultKeyManager.isSupported()) {
                 val pair = vaultKeyManager.ensureKey()
