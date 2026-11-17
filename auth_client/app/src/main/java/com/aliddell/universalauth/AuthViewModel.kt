@@ -209,6 +209,7 @@ class AuthViewModel(
                         requestId = request.id,
                         challenge = request.challenge,
                         clientNonce = request.clientNonce,
+                        displayedResource = request.resource,
                         release = release,
                         pinnedDesktopId = trusted.desktop_id,
                         pinnedDesktopPublic = desktopPublic,

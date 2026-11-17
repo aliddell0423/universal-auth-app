@@ -16,25 +16,54 @@ import (
 	"math/big"
 )
 
-// CredentialPlaintext is the JSON credential payload.
+// CredentialPlaintext is the legacy v2 JSON credential payload.
 type CredentialPlaintext struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 }
 
-// Encrypt builds a v2 credential package.
-func Encrypt(pt *CredentialPlaintext, id, origin, pixelVaultKeyID string, pixelVaultPub *ecdsa.PublicKey) (*Package, []byte, error) {
+// Plaintext is the v3 JSON payload: a map of named fields.
+type Plaintext struct {
+	Fields map[string]string `json:"fields"`
+}
+
+// plainPayload wraps fields for JSON marshaling.
+type plainPayload struct {
+	Fields map[string]string `json:"fields"`
+}
+
+func marshalPlaintext(fields map[string]string) ([]byte, error) {
+	return json.Marshal(plainPayload{Fields: fields})
+}
+
+// EncryptV2 builds a legacy v2 credential package (username/password, origin).
+func EncryptV2(pt *CredentialPlaintext, id, origin, pixelVaultKeyID string, pixelVaultPub *ecdsa.PublicKey) (*Package, []byte, error) {
 	payload, err := json.Marshal(pt)
 	if err != nil {
 		return nil, nil, err
 	}
+	return encryptPackage(CryptoVersionV2, payload, id, "", origin, pixelVaultKeyID, pixelVaultPub)
+}
 
+// Encrypt builds a v3 package for the given kind and resource.
+func Encrypt(fields map[string]string, kind, resource, id, pixelVaultKeyID string, pixelVaultPub *ecdsa.PublicKey) (*Package, []byte, error) {
+	if !ValidKind(kind) {
+		return nil, nil, fmt.Errorf("unsupported kind %q", kind)
+	}
+	payload, err := marshalPlaintext(fields)
+	if err != nil {
+		return nil, nil, err
+	}
+	return encryptPackage(CryptoVersionV3, payload, id, kind, resource, pixelVaultKeyID, pixelVaultPub)
+}
+
+func encryptPackage(version int, payload []byte, id, kind, resource, pixelVaultKeyID string, pixelVaultPub *ecdsa.PublicKey) (*Package, []byte, error) {
 	dek := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, dek); err != nil {
 		return nil, nil, err
 	}
 
-	ciphertext, cipherNonce, err := GCMEncrypt(dek, payload, credentialAAD(id, origin, pixelVaultKeyID))
+	ciphertext, cipherNonce, err := GCMEncrypt(dek, payload, credentialAAD(version, id, kind, resource, pixelVaultKeyID))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -44,7 +73,7 @@ func Encrypt(pt *CredentialPlaintext, id, origin, pixelVaultKeyID string, pixelV
 		return nil, nil, err
 	}
 
-	wrapKey, err := buildWrapKey(wrapPriv, pixelVaultPub, id, origin, pixelVaultKeyID)
+	wrapKey, err := buildWrapKey(version, wrapPriv, pixelVaultPub, id, kind, resource, pixelVaultKeyID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -55,28 +84,37 @@ func Encrypt(pt *CredentialPlaintext, id, origin, pixelVaultKeyID string, pixelV
 	}
 	wrapPubB64 := base64.RawURLEncoding.EncodeToString(wrapPubDER)
 
-	wrapped, wrapNonce, err := GCMEncrypt(wrapKey, dek, wrapAAD(id, origin, pixelVaultKeyID, wrapPubB64))
+	wrapped, wrapNonce, err := GCMEncrypt(wrapKey, dek, wrapAAD(version, id, kind, resource, pixelVaultKeyID, wrapPubB64))
 	if err != nil {
 		return nil, nil, err
 	}
 
 	pkg := &Package{
 		CredentialID:           id,
-		Origin:                 origin,
+		Kind:                   kind,
+		Resource:               resource,
+		Origin:                 originForVersion(version, resource),
 		Ciphertext:             base64.RawURLEncoding.EncodeToString(ciphertext),
 		CipherNonce:            base64.RawURLEncoding.EncodeToString(cipherNonce),
 		WrappedDEK:             base64.RawURLEncoding.EncodeToString(wrapped),
 		WrapNonce:              base64.RawURLEncoding.EncodeToString(wrapNonce),
 		WrapEphemeralPublicKey: wrapPubB64,
 		PixelVaultKeyID:        pixelVaultKeyID,
-		CryptoVersion:          CryptoVersion,
+		CryptoVersion:          version,
 	}
 	return pkg, dek, nil
 }
 
-// Decrypt unwraps and decrypts a v2 package given the Pixel vault private key.
-func Decrypt(pkg *Package, pixelVaultPriv *ecdsa.PrivateKey) (*CredentialPlaintext, error) {
-	if pkg.CryptoVersion != CryptoVersion {
+func originForVersion(version int, resource string) string {
+	if version == CryptoVersionV2 {
+		return resource
+	}
+	return ""
+}
+
+// Decrypt unwraps and decrypts a package (v2 or v3) given the Pixel vault private key.
+func Decrypt(pkg *Package, pixelVaultPriv *ecdsa.PrivateKey) (*Plaintext, error) {
+	if pkg.CryptoVersion != CryptoVersionV2 && pkg.CryptoVersion != CryptoVersionV3 {
 		return nil, fmt.Errorf("unsupported crypto version %d", pkg.CryptoVersion)
 	}
 	wrapPriv, err := x509.ParsePKIXPublicKey(mustB64(pkg.WrapEphemeralPublicKey))
@@ -87,38 +125,59 @@ func Decrypt(pkg *Package, pixelVaultPriv *ecdsa.PrivateKey) (*CredentialPlainte
 	if !ok {
 		return nil, fmt.Errorf("wrap public key is not ECDSA")
 	}
-	wrapKey, err := buildWrapKeyForUnwrap(wrapPub, pixelVaultPriv, pkg.CredentialID, pkg.Origin, pkg.PixelVaultKeyID)
+	kind := pkg.Kind
+	if pkg.CryptoVersion == CryptoVersionV2 {
+		kind = KindLogin
+	}
+	wrapKey, err := buildWrapKeyForUnwrap(pkg.CryptoVersion, wrapPub, pixelVaultPriv, pkg.CredentialID, kind, pkg.Res(), pkg.PixelVaultKeyID)
 	if err != nil {
 		return nil, err
 	}
-	dek, err := GCMDecrypt(wrapKey, mustB64(pkg.WrappedDEK), mustB64(pkg.WrapNonce), wrapAAD(pkg.CredentialID, pkg.Origin, pkg.PixelVaultKeyID, pkg.WrapEphemeralPublicKey))
+	dek, err := GCMDecrypt(wrapKey, mustB64(pkg.WrappedDEK), mustB64(pkg.WrapNonce), wrapAAD(pkg.CryptoVersion, pkg.CredentialID, kind, pkg.Res(), pkg.PixelVaultKeyID, pkg.WrapEphemeralPublicKey))
 	if err != nil {
 		return nil, err
 	}
-	plaintext, err := GCMDecrypt(dek, mustB64(pkg.Ciphertext), mustB64(pkg.CipherNonce), credentialAAD(pkg.CredentialID, pkg.Origin, pkg.PixelVaultKeyID))
+	plaintext, err := GCMDecrypt(dek, mustB64(pkg.Ciphertext), mustB64(pkg.CipherNonce), credentialAAD(pkg.CryptoVersion, pkg.CredentialID, kind, pkg.Res(), pkg.PixelVaultKeyID))
 	if err != nil {
 		return nil, err
 	}
-	var pt CredentialPlaintext
-	if err := json.Unmarshal(plaintext, &pt); err != nil {
+	return parsePlaintext(pkg.CryptoVersion, plaintext)
+}
+
+func parsePlaintext(version int, plaintext []byte) (*Plaintext, error) {
+	if version == CryptoVersionV2 {
+		var pt CredentialPlaintext
+		if err := json.Unmarshal(plaintext, &pt); err != nil {
+			return nil, err
+		}
+		return &Plaintext{Fields: map[string]string{
+			"username": pt.Username,
+			"password": pt.Password,
+		}}, nil
+	}
+	var payload plainPayload
+	if err := json.Unmarshal(plaintext, &payload); err != nil {
 		return nil, err
 	}
-	return &pt, nil
+	if payload.Fields == nil {
+		return nil, fmt.Errorf("plaintext missing fields")
+	}
+	return &Plaintext{Fields: payload.Fields}, nil
 }
 
-func buildWrapKey(wrapPriv *ecdsa.PrivateKey, pixelVaultPub *ecdsa.PublicKey, id, origin, pixelVaultKeyID string) ([]byte, error) {
-	return deriveSharedKey(wrapPriv, pixelVaultPub, id, origin, pixelVaultKeyID)
+func buildWrapKey(version int, wrapPriv *ecdsa.PrivateKey, pixelVaultPub *ecdsa.PublicKey, id, kind, resource, pixelVaultKeyID string) ([]byte, error) {
+	return deriveSharedKey(version, wrapPriv, pixelVaultPub, id, kind, resource, pixelVaultKeyID)
 }
 
-func buildWrapKeyForUnwrap(wrapPub *ecdsa.PublicKey, pixelVaultPriv *ecdsa.PrivateKey, id, origin, pixelVaultKeyID string) ([]byte, error) {
-	return deriveSharedKeyWithScalar(wrapPub, pixelVaultPriv.D, id, origin, pixelVaultKeyID)
+func buildWrapKeyForUnwrap(version int, wrapPub *ecdsa.PublicKey, pixelVaultPriv *ecdsa.PrivateKey, id, kind, resource, pixelVaultKeyID string) ([]byte, error) {
+	return deriveSharedKeyWithScalar(version, wrapPub, pixelVaultPriv.D, id, kind, resource, pixelVaultKeyID)
 }
 
-func deriveSharedKey(localPriv *ecdsa.PrivateKey, peerPub *ecdsa.PublicKey, id, origin, pixelVaultKeyID string) ([]byte, error) {
-	return deriveSharedKeyWithScalar(peerPub, localPriv.D, id, origin, pixelVaultKeyID)
+func deriveSharedKey(version int, localPriv *ecdsa.PrivateKey, peerPub *ecdsa.PublicKey, id, kind, resource, pixelVaultKeyID string) ([]byte, error) {
+	return deriveSharedKeyWithScalar(version, peerPub, localPriv.D, id, kind, resource, pixelVaultKeyID)
 }
 
-func deriveSharedKeyWithScalar(peerPub *ecdsa.PublicKey, scalar *big.Int, id, origin, pixelVaultKeyID string) ([]byte, error) {
+func deriveSharedKeyWithScalar(version int, peerPub *ecdsa.PublicKey, scalar *big.Int, id, kind, resource, pixelVaultKeyID string) ([]byte, error) {
 	priv, err := ecdh.P256().NewPrivateKey(pad32(scalar.Bytes()))
 	if err != nil {
 		return nil, err
@@ -131,13 +190,19 @@ func deriveSharedKeyWithScalar(peerPub *ecdsa.PublicKey, scalar *big.Int, id, or
 	if err != nil {
 		return nil, err
 	}
-	return deriveWrapKey(secret, id, origin, pixelVaultKeyID)
+	return deriveWrapKey(version, secret, id, kind, resource, pixelVaultKeyID)
 }
 
-func deriveWrapKey(secret []byte, id, origin, pixelVaultKeyID string) ([]byte, error) {
-	salt := sha256.Sum256([]byte(fmt.Sprintf("universal-auth:vault-wrap-salt:v2\ncredential_id=%s\norigin=%s\npixel_vault_key_id=%s\n", id, origin, pixelVaultKeyID)))
-	info := []byte("universal-auth:vault-wrap-key:v2")
-	return DeriveKey(secret, salt[:], info, 32)
+func deriveWrapKey(version int, secret []byte, id, kind, resource, pixelVaultKeyID string) ([]byte, error) {
+	saltMsg := fmt.Sprintf("universal-auth:vault-wrap-salt:v%d\ncredential_id=%s\n", version, id)
+	info := fmt.Sprintf("universal-auth:vault-wrap-key:v%d", version)
+	if version == CryptoVersionV3 {
+		saltMsg += fmt.Sprintf("kind=%s\nresource=%s\npixel_vault_key_id=%s\n", kind, resource, pixelVaultKeyID)
+	} else {
+		saltMsg += fmt.Sprintf("origin=%s\npixel_vault_key_id=%s\n", resource, pixelVaultKeyID)
+	}
+	salt := sha256.Sum256([]byte(saltMsg))
+	return DeriveKey(secret, salt[:], []byte(info), 32)
 }
 
 func GCMEncrypt(key, plaintext, aad []byte) ([]byte, []byte, error) {
@@ -169,24 +234,32 @@ func GCMDecrypt(key, ciphertext, nonce, aad []byte) ([]byte, error) {
 	return g.Open(nil, nonce, ciphertext, aad)
 }
 
-func credentialAAD(id, origin, pixelVaultKeyID string) []byte {
-	return []byte(fmt.Sprintf("universal-auth:vault-credential:v2\ncredential_id=%s\norigin=%s\npixel_vault_key_id=%s\n", id, origin, pixelVaultKeyID))
+func credentialAAD(version int, id, kind, resource, pixelVaultKeyID string) []byte {
+	if version == CryptoVersionV3 {
+		return []byte(fmt.Sprintf("universal-auth:vault-credential:v3\ncredential_id=%s\nkind=%s\nresource=%s\npixel_vault_key_id=%s\n", id, kind, resource, pixelVaultKeyID))
+	}
+	return []byte(fmt.Sprintf("universal-auth:vault-credential:v2\ncredential_id=%s\norigin=%s\npixel_vault_key_id=%s\n", id, resource, pixelVaultKeyID))
 }
 
-func wrapAAD(id, origin, pixelVaultKeyID, wrapEphemeralPub string) []byte {
-	return []byte(fmt.Sprintf("universal-auth:vault-dek:v2\ncredential_id=%s\norigin=%s\npixel_vault_key_id=%s\nwrap_ephemeral_public_key=%s\n", id, origin, pixelVaultKeyID, wrapEphemeralPub))
+func wrapAAD(version int, id, kind, resource, pixelVaultKeyID, wrapEphemeralPub string) []byte {
+	if version == CryptoVersionV3 {
+		return []byte(fmt.Sprintf("universal-auth:vault-dek:v3\ncredential_id=%s\nkind=%s\nresource=%s\npixel_vault_key_id=%s\nwrap_ephemeral_public_key=%s\n", id, kind, resource, pixelVaultKeyID, wrapEphemeralPub))
+	}
+	return []byte(fmt.Sprintf("universal-auth:vault-dek:v2\ncredential_id=%s\norigin=%s\npixel_vault_key_id=%s\nwrap_ephemeral_public_key=%s\n", id, resource, pixelVaultKeyID, wrapEphemeralPub))
 }
 
-func DecryptCredentialWithDEK(pkg *Package, dek []byte) (*CredentialPlaintext, error) {
-	plaintext, err := GCMDecrypt(dek, mustB64(pkg.Ciphertext), mustB64(pkg.CipherNonce), credentialAAD(pkg.CredentialID, pkg.Origin, pkg.PixelVaultKeyID))
+// DecryptCredentialWithDEK decrypts the payload of a package with an
+// already-unwrapped DEK, returning the parsed plaintext.
+func DecryptCredentialWithDEK(pkg *Package, dek []byte) (*Plaintext, error) {
+	kind := pkg.Kind
+	if pkg.CryptoVersion == CryptoVersionV2 {
+		kind = KindLogin
+	}
+	plaintext, err := GCMDecrypt(dek, mustB64(pkg.Ciphertext), mustB64(pkg.CipherNonce), credentialAAD(pkg.CryptoVersion, pkg.CredentialID, kind, pkg.Res(), pkg.PixelVaultKeyID))
 	if err != nil {
 		return nil, err
 	}
-	var pt CredentialPlaintext
-	if err := json.Unmarshal(plaintext, &pt); err != nil {
-		return nil, err
-	}
-	return &pt, nil
+	return parsePlaintext(pkg.CryptoVersion, plaintext)
 }
 
 func pad32(b []byte) []byte {

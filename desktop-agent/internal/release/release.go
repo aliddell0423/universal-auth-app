@@ -26,17 +26,20 @@ const (
 
 type Result struct {
 	Status    string
-	Username  string
-	Password  string
+	Kind      string
+	Resource  string
+	Fields    map[string]string
 	Error     error
 	RequestID string
 	TraceID   string
 }
 
-// SecureRelease performs the full v2 secure release and returns the credential and transaction IDs.
+// SecureRelease performs the full secure release and returns the decrypted
+// fields plus the transaction IDs. resource is the package lookup resource:
+// a normalized origin for login packages or a secret name for others.
 func SecureRelease(
 	ctx context.Context,
-	origin string,
+	resource string,
 	pkg *vaultcrypto.Package,
 	ident *identity.Identity,
 	pixelVaultKeyID string,
@@ -44,17 +47,26 @@ func SecureRelease(
 	traceID string,
 	timeout, poll time.Duration,
 ) (*Result, error) {
-	if pkg.CryptoVersion != vaultcrypto.CryptoVersion {
+	if pkg.CryptoVersion != vaultcrypto.CryptoVersionV2 && pkg.CryptoVersion != vaultcrypto.CryptoVersionV3 {
 		return nil, fmt.Errorf("unsupported package crypto version %d", pkg.CryptoVersion)
 	}
-	if pkg.Origin != origin {
-		return nil, fmt.Errorf("package origin does not match request")
+	if pkg.Res() != resource {
+		return nil, fmt.Errorf("package resource does not match request")
 	}
 	if pkg.PixelVaultKeyID != pixelVaultKeyID {
 		return nil, fmt.Errorf("package pixel vault key id does not match pinned key")
 	}
 	if err := verifyPackageHash(pkg, vaultcrypto.Hash(pkg)); err != nil {
 		return nil, err
+	}
+
+	kind := pkg.Kind
+	if kind == "" {
+		kind = vaultcrypto.KindLogin
+	}
+	what := "credential"
+	if kind != vaultcrypto.KindLogin {
+		what = "secret"
 	}
 
 	releasePriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -69,8 +81,8 @@ func SecureRelease(
 	createReq := broker.CreateRequest{
 		Source:      "universal-auth",
 		Kind:        "credential_release",
-		Resource:    origin,
-		Message:     "Release saved login credential for " + origin,
+		Resource:    resource,
+		Message:     "Release saved " + what + " for " + resource,
 		ClientNonce: generateClientNonce(),
 	}
 
@@ -83,12 +95,13 @@ func SecureRelease(
 	}
 
 	canonical := canonicalReleaseRequest(
+		2,
 		pending.ID,
 		pending.Challenge,
 		pending.ClientNonce,
 		ident.DesktopID(),
 		"credential_release",
-		origin,
+		resource,
 		pkg.CredentialID,
 		vaultcrypto.Hash(pkg),
 		desktopEphemeralPub,
@@ -102,7 +115,7 @@ func SecureRelease(
 
 	packageCanonical := string(vaultcrypto.Canonical(pkg))
 	attachReq := broker.ReleaseRequest{
-		Protocol:               "universal-auth:secure-release:v1",
+		Protocol:               ReleaseProtocolV2,
 		DesktopID:              ident.DesktopID(),
 		DesktopAlgorithm:       "ECDSA_P256_SHA256",
 		DesktopEphemeralPublic: desktopEphemeralPub,
@@ -142,8 +155,9 @@ func SecureRelease(
 					requestTraceID = traceID
 				}
 				return &Result{
-					Username:  pt.Username,
-					Password:  pt.Password,
+					Kind:      kind,
+					Resource:  resource,
+					Fields:    pt.Fields,
 					RequestID: result.ID,
 					TraceID:   requestTraceID,
 				}, nil
@@ -162,9 +176,9 @@ func generateClientNonce() string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-func decryptReleaseResponse(pkg *vaultcrypto.Package, result broker.Request, releasePriv *ecdsa.PrivateKey, desktopID string) (*vaultcrypto.CredentialPlaintext, error) {
+func decryptReleaseResponse(pkg *vaultcrypto.Package, result broker.Request, releasePriv *ecdsa.PrivateKey, desktopID string) (*vaultcrypto.Plaintext, error) {
 	resp := result.ReleaseResponse
-	if resp.Protocol != "universal-auth:secure-release:v1" {
+	if resp.Protocol != ReleaseProtocolV1 && resp.Protocol != ReleaseProtocolV2 {
 		return nil, fmt.Errorf("unsupported release response protocol")
 	}
 	if resp.CredentialID != pkg.CredentialID {
@@ -175,6 +189,11 @@ func decryptReleaseResponse(pkg *vaultcrypto.Package, result broker.Request, rel
 	}
 	if resp.PixelVaultKeyID != pkg.PixelVaultKeyID {
 		return nil, fmt.Errorf("pixel vault key id mismatch in response")
+	}
+
+	version := 1
+	if resp.Protocol == ReleaseProtocolV2 {
+		version = 2
 	}
 
 	pixelEphemeralPub, err := parsePublicKey(resp.PixelEphemeralPublic)
@@ -188,16 +207,17 @@ func decryptReleaseResponse(pkg *vaultcrypto.Package, result broker.Request, rel
 		return nil, err
 	}
 	salt := transferSalt(
+		version,
 		result.ID,
 		result.Challenge,
 		result.ClientNonce,
 		desktopID,
 		pkg.CredentialID,
-		pkg.Origin,
+		pkg.Res(),
 		resp.PackageHash,
 		resp.PixelVaultKeyID,
 	)
-	info := []byte("universal-auth:release-transfer-key:v1")
+	info := []byte(fmt.Sprintf("universal-auth:release-transfer-key:v%d", version))
 	transferKey, err := vaultcrypto.DeriveKey(secret, salt, info, 32)
 	if err != nil {
 		return nil, err
@@ -212,12 +232,13 @@ func decryptReleaseResponse(pkg *vaultcrypto.Package, result broker.Request, rel
 		return nil, fmt.Errorf("transfer nonce: %w", err)
 	}
 	aad := transferAAD(
+		version,
 		result.ID,
 		result.Challenge,
 		result.ClientNonce,
 		desktopID,
 		pkg.CredentialID,
-		pkg.Origin,
+		pkg.Res(),
 		resp.PackageHash,
 		resp.PixelVaultKeyID,
 		fedoraEphemeralPub,

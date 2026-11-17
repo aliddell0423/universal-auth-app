@@ -145,13 +145,19 @@ func vaultHandler(t *testing.T, pixelVaultKeyID string) http.Handler {
 		fmt.Fprintln(w, `{"status":"ok"}`)
 	})
 	mux.HandleFunc("/v1/credentials/exists", func(w http.ResponseWriter, r *http.Request) {
-		origin := r.URL.Query().Get("origin")
+		origin := r.URL.Query().Get("resource")
+		if origin == "" {
+			origin = r.URL.Query().Get("origin")
+		}
 		exists := origin == "https://example.com"
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(vault.ExistsResponse{Exists: exists})
 	})
 	mux.HandleFunc("/v1/credentials/package", func(w http.ResponseWriter, r *http.Request) {
-		origin := r.URL.Query().Get("origin")
+		origin := r.URL.Query().Get("resource")
+		if origin == "" {
+			origin = r.URL.Query().Get("origin")
+		}
 		if origin != "https://example.com" {
 			http.Error(w, `{"code":"UA-VAULT-002"}`, http.StatusNotFound)
 			return

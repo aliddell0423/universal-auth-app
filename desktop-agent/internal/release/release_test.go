@@ -22,7 +22,11 @@ import (
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/vaultcrypto"
 )
 
-func TestReleaseRoundTrip(t *testing.T) {
+func TestReleaseRoundTrip(t *testing.T) { testReleaseRoundTrip(t, false) }
+
+func TestReleaseRoundTripV3Secret(t *testing.T) { testReleaseRoundTrip(t, true) }
+
+func testReleaseRoundTrip(t *testing.T, v3 bool) {
 	pixelVaultPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -35,13 +39,21 @@ func TestReleaseRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pkg, dek, err := vaultcrypto.Encrypt(
+	resource := "https://github.com"
+	pkg, dek, err := vaultcrypto.EncryptV2(
 		&vaultcrypto.CredentialPlaintext{Username: "tester", Password: "hunter2"},
 		"deadbeef",
-		"https://github.com",
+		resource,
 		pixelVaultID,
 		pixelVaultPub,
 	)
+	if v3 {
+		resource = "api-keys/github"
+		pkg, dek, err = vaultcrypto.Encrypt(
+			map[string]string{"username": "tester", "password": "hunter2", "token": "line1\nline2"},
+			vaultcrypto.KindSecret, resource, "deadbeef", pixelVaultID, pixelVaultPub,
+		)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,12 +132,15 @@ func TestReleaseRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result, err := SecureRelease(ctx, "https://github.com", pkg, ident, pixelVaultID, bc, "test-trace", 5*time.Second, 50*time.Millisecond)
+	result, err := SecureRelease(ctx, resource, pkg, ident, pixelVaultID, bc, "test-trace", 5*time.Second, 50*time.Millisecond)
 	if err != nil {
 		t.Fatalf("secure release failed: %v", err)
 	}
-	if result.Username != "tester" || result.Password != "hunter2" {
-		t.Fatalf("unexpected plaintext: user=%s pass=%s", result.Username, result.Password)
+	if result.Fields["username"] != "tester" || result.Fields["password"] != "hunter2" {
+		t.Fatalf("unexpected plaintext: %v", result.Fields)
+	}
+	if v3 && (result.Fields["token"] != "line1\nline2" || result.Kind != vaultcrypto.KindSecret) {
+		t.Fatalf("unexpected v3 result: kind=%s fields=%v", result.Kind, result.Fields)
 	}
 }
 
@@ -135,7 +150,11 @@ func simulatePixelResponse(t *testing.T, requestID, challenge, clientNonce strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	origin, err := fromB64url(parsed["origin"])
+	resourceField := parsed["origin"]
+	if r, ok := parsed["resource"]; ok {
+		resourceField = r
+	}
+	origin, err := fromB64url(resourceField)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,6 +175,7 @@ func simulatePixelResponse(t *testing.T, requestID, challenge, clientNonce strin
 	}
 
 	salt := transferSalt(
+		2,
 		requestID,
 		challenge,
 		clientNonce,
@@ -165,7 +185,7 @@ func simulatePixelResponse(t *testing.T, requestID, challenge, clientNonce strin
 		release.PackageHash,
 		parsed["pixel_vault_key_id"],
 	)
-	transferKey, err := vaultcrypto.DeriveKey(secret, salt, []byte("universal-auth:release-transfer-key:v1"), 32)
+	transferKey, err := vaultcrypto.DeriveKey(secret, salt, []byte("universal-auth:release-transfer-key:v2"), 32)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,6 +196,7 @@ func simulatePixelResponse(t *testing.T, requestID, challenge, clientNonce strin
 	}
 
 	aad := transferAAD(
+		2,
 		requestID,
 		challenge,
 		clientNonce,
@@ -194,7 +215,7 @@ func simulatePixelResponse(t *testing.T, requestID, challenge, clientNonce strin
 	}
 
 	return broker.ReleaseResponse{
-		Protocol:             "universal-auth:secure-release:v1",
+		Protocol:             ReleaseProtocolV2,
 		CredentialID:         credentialID,
 		PackageHash:          release.PackageHash,
 		PixelVaultKeyID:      parsed["pixel_vault_key_id"],
@@ -207,7 +228,7 @@ func simulatePixelResponse(t *testing.T, requestID, challenge, clientNonce strin
 func parseCanonicalPackage(t *testing.T, s string) map[string]string {
 	t.Helper()
 	lines := strings.Split(strings.TrimSpace(s), "\n")
-	if len(lines) == 0 || lines[0] != "universal-auth:vault-package:v2" {
+	if len(lines) == 0 || (lines[0] != "universal-auth:vault-package:v2" && lines[0] != "universal-auth:vault-package:v3") {
 		t.Fatalf("invalid package header")
 	}
 	m := make(map[string]string)

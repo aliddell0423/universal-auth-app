@@ -27,7 +27,7 @@ class ContractFixtureTest {
         val body = load("contracts/release_response.json")
         val response = json.decodeFromString<ReleaseResponse>(body)
 
-        assertEquals("universal-auth:secure-release:v1", response.protocol)
+        assertEquals("universal-auth:secure-release:v2", response.protocol)
         assertEquals("cred-123", response.credentialId)
         assertEquals("hash-abc", response.packageHash)
         assertEquals("pixel-key-1", response.pixelVaultKeyId)
@@ -36,7 +36,7 @@ class ContractFixtureTest {
         assertEquals("encDek123", response.encryptedDek)
 
         val encoded = json.encodeToString(response)
-        assertTrue("protocol", encoded.contains("\"protocol\":\"universal-auth:secure-release:v1\""))
+        assertTrue("protocol", encoded.contains("\"protocol\":\"universal-auth:secure-release:v2\""))
         assertTrue("credential_id", encoded.contains("\"credential_id\":\"cred-123\""))
         assertTrue("package_hash", encoded.contains("\"package_hash\":\"hash-abc\""))
         assertTrue("pixel_vault_key_id", encoded.contains("\"pixel_vault_key_id\":\"pixel-key-1\""))

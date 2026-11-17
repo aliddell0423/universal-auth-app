@@ -19,8 +19,13 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 object SecureRelease {
+    const val PROTOCOL_V1 = "universal-auth:secure-release:v1"
+    const val PROTOCOL_V2 = "universal-auth:secure-release:v2"
+
     data class Package(
         val credentialId: String,
+        val kind: String,
+        val resource: String,
         val origin: String,
         val ciphertext: ByteArray,
         val cipherNonce: ByteArray,
@@ -29,7 +34,12 @@ object SecureRelease {
         val wrapEphemeralPublic: ByteArray,
         val pixelVaultKeyId: String,
         val cryptoVersion: Int
-    )
+    ) {
+        // res is the lookup resource: resource for v3, origin for v2.
+        val res: String get() = resource.ifEmpty { origin }
+        // effectiveKind defaults legacy v2 packages to login.
+        val effectiveKind: String get() = kind.ifEmpty { "login" }
+    }
 
     data class PlaintextCredential(
         val username: String,
@@ -40,15 +50,38 @@ object SecureRelease {
         requestId: String,
         challenge: String,
         clientNonce: String,
+        displayedResource: String,
         release: ReleaseRequest,
         pinnedDesktopId: String,
         pinnedDesktopPublic: ByteArray,
         pinnedPixelVaultKeyId: String,
         vaultKeyManager: VaultKeyManager,
         onStage: (ReleaseStage) -> Unit = {}
+    ): ReleaseResponse = process(
+        requestId, challenge, clientNonce, displayedResource, release, pinnedDesktopId,
+        pinnedDesktopPublic, pinnedPixelVaultKeyId, vaultKeyManager::createKeyAgreement, onStage
+    )
+
+    // vaultKeyAgreement supplies an ECDH KeyAgreement initialised with the
+    // Pixel vault private key; it is a parameter so the flow can be tested
+    // off-device against vectors produced by the desktop agent.
+    //
+    // displayedResource is the resource the user was shown when approving. It
+    // comes from the broker, so it is checked against the signed package.
+    fun process(
+        requestId: String,
+        challenge: String,
+        clientNonce: String,
+        displayedResource: String,
+        release: ReleaseRequest,
+        pinnedDesktopId: String,
+        pinnedDesktopPublic: ByteArray,
+        pinnedPixelVaultKeyId: String,
+        vaultKeyAgreement: () -> KeyAgreement,
+        onStage: (ReleaseStage) -> Unit = {}
     ): ReleaseResponse {
         onStage(ReleaseStage.VALIDATING_REQUEST)
-        if (release.protocol != "universal-auth:secure-release:v1") {
+        if (release.protocol != PROTOCOL_V1 && release.protocol != PROTOCOL_V2) {
             throw SecurityException("unsupported protocol")
         }
         if (release.desktopAlgorithm != "ECDSA_P256_SHA256") {
@@ -60,7 +93,7 @@ object SecureRelease {
         onStage(ReleaseStage.VERIFYING_DESKTOP)
 
         val pkg = parsePackage(release.credentialPackage)
-        if (pkg.cryptoVersion != 2) {
+        if (pkg.cryptoVersion != 2 && pkg.cryptoVersion != 3) {
             throw SecurityException("unsupported credential crypto version")
         }
         val computedHash = packageHash(pkg)
@@ -70,12 +103,16 @@ object SecureRelease {
         if (pkg.pixelVaultKeyId != pinnedPixelVaultKeyId) {
             throw SecurityException("pixel vault key id mismatch")
         }
+        if (pkg.res != displayedResource) {
+            throw SecurityException("displayed resource does not match the package being released")
+        }
         onStage(ReleaseStage.VERIFYING_PACKAGE)
 
         val desktopPublic = decodeP256PublicKey(pinnedDesktopPublic)
+        val releaseVersion = if (release.protocol == PROTOCOL_V2) 2 else 1
         val signedPayload = canonicalReleaseRequest(
-            requestId, challenge, clientNonce, release.desktopId,
-            "credential_release", pkg.origin, pkg.credentialId, release.packageHash,
+            releaseVersion, requestId, challenge, clientNonce, release.desktopId,
+            "credential_release", pkg.res, pkg.credentialId, release.packageHash,
             release.desktopEphemeralPublic, pkg.pixelVaultKeyId
         )
         val sig = Base64.getDecoder().decode(release.desktopSignature)
@@ -90,14 +127,15 @@ object SecureRelease {
         val desktopReleasePublic = decodeP256PublicKey(Base64.getUrlDecoder().decode(release.desktopEphemeralPublic))
 
         onStage(ReleaseStage.UNLOCKING_VAULT_KEY)
-        val agreement = vaultKeyManager.createKeyAgreement()
+        val agreement = vaultKeyAgreement()
         agreement.doPhase(wrapPublic, true)
         val shared = agreement.generateSecret()
 
-        val wrapSalt = wrapSalt(pkg.credentialId, pkg.origin, pkg.pixelVaultKeyId)
+        val wrapSalt = wrapSalt(pkg)
+        val wrapInfo = "universal-auth:vault-wrap-key:v${pkg.cryptoVersion}"
         val wrapKey = HKDF.deriveSha256(
             shared, wrapSalt,
-            "universal-auth:vault-wrap-key:v2".toByteArray(StandardCharsets.US_ASCII), 32
+            wrapInfo.toByteArray(StandardCharsets.US_ASCII), 32
         )
 
         onStage(ReleaseStage.UNWRAPPING_DEK)
@@ -114,26 +152,27 @@ object SecureRelease {
         val transferSecret = responseAgreement.generateSecret()
 
         val transferSalt = transferSalt(
-            requestId, challenge, clientNonce, release.desktopId,
-            pkg.credentialId, pkg.origin, release.packageHash, pkg.pixelVaultKeyId
+            releaseVersion, requestId, challenge, clientNonce, release.desktopId,
+            pkg.credentialId, pkg.res, release.packageHash, pkg.pixelVaultKeyId
         )
+        val transferInfo = "universal-auth:release-transfer-key:v$releaseVersion"
         val transferKey = HKDF.deriveSha256(
             transferSecret, transferSalt,
-            "universal-auth:release-transfer-key:v1".toByteArray(StandardCharsets.US_ASCII), 32
+            transferInfo.toByteArray(StandardCharsets.US_ASCII), 32
         )
 
         val transferNonce = randomBytes(12)
         val pixelEphemeralPublic = base64url(responseKeyPair.public.encoded)
         val aad = transferAAD(
-            requestId, challenge, clientNonce, release.desktopId,
-            pkg.credentialId, pkg.origin, release.packageHash, pkg.pixelVaultKeyId,
+            releaseVersion, requestId, challenge, clientNonce, release.desktopId,
+            pkg.credentialId, pkg.res, release.packageHash, pkg.pixelVaultKeyId,
             release.desktopEphemeralPublic, pixelEphemeralPublic
         )
         val encryptedDek = aesGcmEncrypt(transferKey, dek, transferNonce, aad)
 
         onStage(ReleaseStage.COMPLETE)
         return ReleaseResponse(
-            protocol = "universal-auth:secure-release:v1",
+            protocol = if (releaseVersion == 2) PROTOCOL_V2 else PROTOCOL_V1,
             credentialId = pkg.credentialId,
             packageHash = release.packageHash,
             pixelVaultKeyId = pkg.pixelVaultKeyId,
@@ -153,8 +192,11 @@ object SecureRelease {
 
     private fun parsePackage(s: String): Package {
         val lines = s.trimEnd().split("\n")
-        if (lines.isEmpty() || lines[0] != "universal-auth:vault-package:v2") {
-            throw SecurityException("invalid package header")
+        val header = lines.firstOrNull() ?: throw SecurityException("invalid package header")
+        val version = when (header) {
+            "universal-auth:vault-package:v2" -> 2
+            "universal-auth:vault-package:v3" -> 3
+            else -> throw SecurityException("invalid package header")
         }
         val map = lines.drop(1).associate { line ->
             val idx = line.indexOf('=')
@@ -162,9 +204,19 @@ object SecureRelease {
             line.substring(0, idx) to line.substring(idx + 1)
         }
         val credentialId = String(base64urlDecode(map["credential_id"] ?: throw SecurityException("missing credential_id")), StandardCharsets.UTF_8)
-        val origin = String(base64urlDecode(map["origin"] ?: throw SecurityException("missing origin")), StandardCharsets.UTF_8)
+        val kind = if (version == 3) {
+            String(base64urlDecode(map["kind"] ?: throw SecurityException("missing kind")), StandardCharsets.UTF_8)
+        } else ""
+        val resource = if (version == 3) {
+            String(base64urlDecode(map["resource"] ?: throw SecurityException("missing resource")), StandardCharsets.UTF_8)
+        } else ""
+        val origin = if (version == 2) {
+            String(base64urlDecode(map["origin"] ?: throw SecurityException("missing origin")), StandardCharsets.UTF_8)
+        } else ""
         return Package(
             credentialId = credentialId,
+            kind = kind,
+            resource = resource,
             origin = origin,
             ciphertext = base64urlDecode(map["ciphertext"] ?: throw SecurityException("missing ciphertext")),
             cipherNonce = base64urlDecode(map["cipher_nonce"] ?: throw SecurityException("missing cipher_nonce")),
@@ -178,9 +230,16 @@ object SecureRelease {
 
     private fun canonicalPackage(pkg: Package): ByteArray {
         val sb = StringBuilder()
-        sb.append("universal-auth:vault-package:v2\n")
-        sb.append("credential_id=${base64urlUtf8(pkg.credentialId)}\n")
-        sb.append("origin=${base64urlUtf8(pkg.origin)}\n")
+        if (pkg.cryptoVersion == 2) {
+            sb.append("universal-auth:vault-package:v2\n")
+            sb.append("credential_id=${base64urlUtf8(pkg.credentialId)}\n")
+            sb.append("origin=${base64urlUtf8(pkg.origin)}\n")
+        } else {
+            sb.append("universal-auth:vault-package:v3\n")
+            sb.append("credential_id=${base64urlUtf8(pkg.credentialId)}\n")
+            sb.append("kind=${base64urlUtf8(pkg.kind)}\n")
+            sb.append("resource=${base64urlUtf8(pkg.resource)}\n")
+        }
         sb.append("ciphertext=${base64url(pkg.ciphertext)}\n")
         sb.append("cipher_nonce=${base64url(pkg.cipherNonce)}\n")
         sb.append("wrapped_dek=${base64url(pkg.wrappedDek)}\n")
@@ -197,59 +256,73 @@ object SecureRelease {
     }
 
     private fun canonicalReleaseRequest(
+        version: Int,
         requestId: String,
         challenge: String,
         clientNonce: String,
         desktopId: String,
         kind: String,
-        origin: String,
+        resource: String,
         credentialId: String,
         packageHash: String,
         desktopEphemeralPublic: String,
         pixelVaultKeyId: String
     ): ByteArray {
-        val sb = StringBuilder()
-        sb.append("universal-auth:secure-release-request:v1\n")
-        sb.append("request_id=${base64urlUtf8(requestId)}\n")
-        sb.append("challenge=${challenge}\n")
-        sb.append("client_nonce=${clientNonce}\n")
-        sb.append("desktop_id=${desktopId}\n")
-        sb.append("kind=${base64urlUtf8(kind)}\n")
-        sb.append("origin=${base64urlUtf8(origin)}\n")
-        sb.append("credential_id=${base64urlUtf8(credentialId)}\n")
-        sb.append("package_hash=${packageHash}\n")
-        sb.append("desktop_ephemeral_public_key=${desktopEphemeralPublic}\n")
-        sb.append("pixel_vault_key_id=${pixelVaultKeyId}\n")
-        return sb.toString().toByteArray(StandardCharsets.UTF_8)
+        // Canonical field order: header, request_id, challenge, client_nonce,
+        // desktop_id, kind, resource/origin, credential_id, package_hash,
+        // desktop_ephemeral_public_key, pixel_vault_key_id.
+        val ordered = StringBuilder()
+        ordered.append(if (version == 2) "universal-auth:secure-release-request:v2\n" else "universal-auth:secure-release-request:v1\n")
+        ordered.append("request_id=${base64urlUtf8(requestId)}\n")
+        ordered.append("challenge=${challenge}\n")
+        ordered.append("client_nonce=${clientNonce}\n")
+        ordered.append("desktop_id=${desktopId}\n")
+        ordered.append("kind=${base64urlUtf8(kind)}\n")
+        ordered.append(if (version == 2) "resource=${base64urlUtf8(resource)}\n" else "origin=${base64urlUtf8(resource)}\n")
+        ordered.append("credential_id=${base64urlUtf8(credentialId)}\n")
+        ordered.append("package_hash=${packageHash}\n")
+        ordered.append("desktop_ephemeral_public_key=${desktopEphemeralPublic}\n")
+        ordered.append("pixel_vault_key_id=${pixelVaultKeyId}\n")
+        return ordered.toString().toByteArray(StandardCharsets.UTF_8)
     }
 
-    private fun wrapSalt(credentialId: String, origin: String, pixelVaultKeyId: String): ByteArray {
-        val s = "universal-auth:vault-wrap-salt:v2\ncredential_id=$credentialId\norigin=$origin\npixel_vault_key_id=$pixelVaultKeyId\n"
+    private fun wrapSalt(pkg: Package): ByteArray {
+        val s = if (pkg.cryptoVersion == 3) {
+            "universal-auth:vault-wrap-salt:v3\ncredential_id=${pkg.credentialId}\nkind=${pkg.kind}\nresource=${pkg.resource}\npixel_vault_key_id=${pkg.pixelVaultKeyId}\n"
+        } else {
+            "universal-auth:vault-wrap-salt:v2\ncredential_id=${pkg.credentialId}\norigin=${pkg.origin}\npixel_vault_key_id=${pkg.pixelVaultKeyId}\n"
+        }
         return MessageDigest.getInstance("SHA-256").digest(s.toByteArray(StandardCharsets.UTF_8))
     }
 
     private fun wrapAAD(pkg: Package): ByteArray {
-        val s = "universal-auth:vault-dek:v2\ncredential_id=${pkg.credentialId}\norigin=${pkg.origin}\npixel_vault_key_id=${pkg.pixelVaultKeyId}\nwrap_ephemeral_public_key=${base64url(pkg.wrapEphemeralPublic)}\n"
+        val s = if (pkg.cryptoVersion == 3) {
+            "universal-auth:vault-dek:v3\ncredential_id=${pkg.credentialId}\nkind=${pkg.kind}\nresource=${pkg.resource}\npixel_vault_key_id=${pkg.pixelVaultKeyId}\nwrap_ephemeral_public_key=${base64url(pkg.wrapEphemeralPublic)}\n"
+        } else {
+            "universal-auth:vault-dek:v2\ncredential_id=${pkg.credentialId}\norigin=${pkg.origin}\npixel_vault_key_id=${pkg.pixelVaultKeyId}\nwrap_ephemeral_public_key=${base64url(pkg.wrapEphemeralPublic)}\n"
+        }
         return s.toByteArray(StandardCharsets.UTF_8)
     }
 
     private fun transferSalt(
+        version: Int,
         requestId: String,
         challenge: String,
         clientNonce: String,
         desktopId: String,
         credentialId: String,
-        origin: String,
+        resource: String,
         packageHash: String,
         pixelVaultKeyId: String
     ): ByteArray {
-        val s = """universal-auth:release-transfer-salt:v1
+        val resourceKey = if (version == 2) "resource" else "origin"
+        val s = """universal-auth:release-transfer-salt:v$version
 request_id=$requestId
 challenge=$challenge
 client_nonce=$clientNonce
 desktop_id=$desktopId
 credential_id=$credentialId
-origin=$origin
+$resourceKey=$resource
 package_hash=$packageHash
 pixel_vault_key_id=$pixelVaultKeyId
 """
@@ -257,24 +330,26 @@ pixel_vault_key_id=$pixelVaultKeyId
     }
 
     private fun transferAAD(
+        version: Int,
         requestId: String,
         challenge: String,
         clientNonce: String,
         desktopId: String,
         credentialId: String,
-        origin: String,
+        resource: String,
         packageHash: String,
         pixelVaultKeyId: String,
         fedoraEphemeralPublic: String,
         pixelEphemeralPublic: String
     ): ByteArray {
-        val s = """universal-auth:release-dek:v1
+        val resourceKey = if (version == 2) "resource" else "origin"
+        val s = """universal-auth:release-dek:v$version
 request_id=$requestId
 challenge=$challenge
 client_nonce=$clientNonce
 desktop_id=$desktopId
 credential_id=$credentialId
-origin=$origin
+$resourceKey=$resource
 package_hash=$packageHash
 pixel_vault_key_id=$pixelVaultKeyId
 fedora_ephemeral_public_key=$fedoraEphemeralPublic
@@ -284,7 +359,11 @@ pixel_ephemeral_public_key=$pixelEphemeralPublic
     }
 
     private fun credentialAAD(pkg: Package): ByteArray {
-        val s = "universal-auth:vault-credential:v2\ncredential_id=${pkg.credentialId}\norigin=${pkg.origin}\npixel_vault_key_id=${pkg.pixelVaultKeyId}\n"
+        val s = if (pkg.cryptoVersion == 3) {
+            "universal-auth:vault-credential:v3\ncredential_id=${pkg.credentialId}\nkind=${pkg.kind}\nresource=${pkg.resource}\npixel_vault_key_id=${pkg.pixelVaultKeyId}\n"
+        } else {
+            "universal-auth:vault-credential:v2\ncredential_id=${pkg.credentialId}\norigin=${pkg.origin}\npixel_vault_key_id=${pkg.pixelVaultKeyId}\n"
+        }
         return s.toByteArray(StandardCharsets.UTF_8)
     }
 

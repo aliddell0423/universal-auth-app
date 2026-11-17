@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/config"
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/vault"
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/vaultcrypto"
-	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/config"
 )
 
 func checkVault(ctx context.Context, cfg *config.Config, client *vault.Client) []Result {
@@ -86,8 +86,10 @@ func checkOrigin(ctx context.Context, cfg *config.Config, client *vault.Client, 
 	}
 	out = append(out, newResult("Origin", "package fetch", Pass, "", "Package fetched.", ""))
 
-	if pkg.CryptoVersion != vaultcrypto.CryptoVersion {
-		out = append(out, newResult("Origin", "crypto version", Fail, "UA-CRYPTO-001", fmt.Sprintf("Package crypto version is %d, expected %d.", pkg.CryptoVersion, vaultcrypto.CryptoVersion), "Re-store the credential with the current tooling."))
+	if pkg.CryptoVersion != vaultcrypto.CryptoVersionV2 && pkg.CryptoVersion != vaultcrypto.CryptoVersionV3 {
+		out = append(out, newResult("Origin", "crypto version", Fail, "UA-CRYPTO-001", fmt.Sprintf("Package crypto version is %d, expected %d or %d.", pkg.CryptoVersion, vaultcrypto.CryptoVersionV2, vaultcrypto.CryptoVersionV3), "Re-store the credential with the current tooling."))
+	} else if pkg.CryptoVersion == vaultcrypto.CryptoVersionV2 {
+		out = append(out, newResult("Origin", "crypto version", Pass, "", fmt.Sprintf("Package crypto version is %d (legacy, still supported).", pkg.CryptoVersion), ""))
 	} else {
 		out = append(out, newResult("Origin", "crypto version", Pass, "", fmt.Sprintf("Package crypto version is %d.", pkg.CryptoVersion), ""))
 	}

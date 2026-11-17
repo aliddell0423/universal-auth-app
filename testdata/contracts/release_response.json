@@ -1,5 +1,5 @@
 {
-  "protocol": "universal-auth:secure-release:v1",
+  "protocol": "universal-auth:secure-release:v2",
   "credential_id": "cred-123",
   "package_hash": "hash-abc",
   "pixel_vault_key_id": "pixel-key-1",

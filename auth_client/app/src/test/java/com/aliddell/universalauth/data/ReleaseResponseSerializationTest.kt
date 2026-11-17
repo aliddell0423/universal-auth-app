@@ -14,7 +14,7 @@ class ReleaseResponseSerializationTest {
     @Test
     fun `encodes all seven required fields`() {
         val response = ReleaseResponse(
-            protocol = "universal-auth:secure-release:v1",
+            protocol = "universal-auth:secure-release:v2",
             credentialId = "abc123",
             packageHash = "hashValue",
             pixelVaultKeyId = "pixelKey",
@@ -25,7 +25,7 @@ class ReleaseResponseSerializationTest {
 
         val encoded = json.encodeToString(response)
 
-        assertTrue("protocol must be present", encoded.contains("\"protocol\":\"universal-auth:secure-release:v1\""))
+        assertTrue("protocol must be present", encoded.contains("\"protocol\":\"universal-auth:secure-release:v2\""))
         assertTrue("credential_id must be present", encoded.contains("\"credential_id\":\"abc123\""))
         assertTrue("package_hash must be present", encoded.contains("\"package_hash\":\"hashValue\""))
         assertTrue("pixel_vault_key_id must be present", encoded.contains("\"pixel_vault_key_id\":\"pixelKey\""))

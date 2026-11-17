@@ -1,0 +1,24 @@
+{
+  "request_id": "req-vector-1",
+  "challenge": "dmVjdG9yLWNoYWxsZW5nZS0wMTIzNDU2Nzg5YWJjZGVm",
+  "client_nonce": "dmVjdG9yLWNsaWVudC1ub25jZS0wMTIzNDU2Nzg5YWI",
+  "desktop_id": "2377691f3b791a36524a2725c2c7b1e74244deb23d21652c0b745284f5e87316",
+  "desktop_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE4D6mWs3S5WbESx/TypLuRf7Acwo1oGL5bdVdfbzcwsat26Heny1DrD6XbagnYz4aj6fR67FSlJKPrjKusF5M+Q==",
+  "desktop_ephemeral_private_key_pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgwot9oFaErwSGijNmJRjsoOaDo9Xk8nQ16bxB3JjsJymhRANCAATLCfJWSURa5gkzK6VmbsOTB3RpwVoc6KjZvyKsl+m/9zUEcQPMl2OT1oTJrvnm9SxYrGJnsZtrMrcfNbct0776",
+  "pixel_vault_private_key_pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgfwcMeNKcV/EYCoVPggbIFYVaevX1/jbAbBqHRapk4IqhRANCAAQ2JXfTAE8IofvK0J9foUOqFnu9Ry9G8SoIMrFFWXEaZ7s3pPt4tB/pnMUJeYLflYgM+GUNv8Whfb96kOQkZWjJ",
+  "pixel_vault_key_id": "5421c4518f6fbdd200a95b18922fad6441b2ae767c74850bbb8493d8db715e4a",
+  "release_request": {
+    "protocol": "universal-auth:secure-release:v2",
+    "desktop_id": "2377691f3b791a36524a2725c2c7b1e74244deb23d21652c0b745284f5e87316",
+    "desktop_algorithm": "ECDSA_P256_SHA256",
+    "desktop_ephemeral_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEywnyVklEWuYJMyulZm7Dkwd0acFaHOio2b8irJfpv_c1BHEDzJdjk9aEya755vUsWKxiZ7GbazK3HzW3LdO--g",
+    "credential_package": "universal-auth:vault-package:v3\ncredential_id=MDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmY\nkind=c3NoX2tleQ\nresource=c3NoL3ZlY3Rvcg\nciphertext=LidHbiJvDoNcbYwvjNZsGDgvmB6Hd1Br6tLVwVkcKh_PYYNToGtgtj8z1xyXoeBGfGIuAcUeGrS0hcyb8MUwAPS2ZPINMSe9xV_pMspjATQV1aIK4XGRqRoBDSUC4fQQx9awTBbE2TEvf96G6zH4DPyjKlp4o9bBEFDPXRuDXixiyEFnOIMEpi0dmFljlaO6WqWyN0fqcr5GLq-Kb1AruAxrrMC666x-lg\ncipher_nonce=DwGwTqxd7pMnpOd5\nwrapped_dek=-Mz0KJfSwZnelr3ReRjKcub16WQID6rUIdpfF6oDM_E4bAxk0oZeCSMLpXsyL9B4\nwrap_nonce=rQtAwi6-F6qFYSL9\nwrap_ephemeral_public_key=MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEw5d-GpyRldzkCuaGpjblKzywbRSUYgqbGukE8HAwvTP4q5Mx77IAAPcbWmyVw9TvRdLyOD47wZhDi39AES2iGg\npixel_vault_key_id=5421c4518f6fbdd200a95b18922fad6441b2ae767c74850bbb8493d8db715e4a\ncrypto_version=3\n",
+    "package_hash": "jiZ7JKNGDStOLIfZ9zU3RnKh7SokkB_zXdkK9DbzXkU",
+    "desktop_signature": "MEYCIQCRf3wKCZtmpesg1vMpe0zFUkOuYIioYug5uRGHQ9KiqAIhAKXVJayW0k2ac+Karu3aZ+K1WHeYmlMxW6cEtP2EZOie"
+  },
+  "expected_dek": "e3cidZRM_ie7Uq6UOKSbMpqJ4LOdxcUyycoUW6FNG60",
+  "expected_fields": {
+    "comment": "vector \"quoted\" comment",
+    "private_key": "-----BEGIN OPENSSH PRIVATE KEY-----\nnot-a-real-key\n-----END OPENSSH PRIVATE KEY-----"
+  }
+}

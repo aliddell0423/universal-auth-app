@@ -20,10 +20,16 @@ import (
 
 var (
 	ErrNotFound           = errors.New("credential not found")
+	ErrAmbiguous          = errors.New("multiple credentials match resource; specify kind")
 	ErrIncompatibleSchema = errors.New("UA-VAULT-001: vault database schema is incompatible with this version; run 'authctl doctor' for repair instructions")
-	currentSchemaVersion  = 2
-	requiredColumns       = []string{
+	currentSchemaVersion  = 3
+	v2Columns             = []string{
 		"id", "origin", "ciphertext", "cipher_nonce", "wrapped_dek",
+		"wrap_nonce", "wrap_ephemeral_public_key", "pixel_vault_key_id",
+		"crypto_version", "created_at", "updated_at",
+	}
+	requiredColumns = []string{
+		"id", "kind", "resource", "ciphertext", "cipher_nonce", "wrapped_dek",
 		"wrap_nonce", "wrap_ephemeral_public_key", "pixel_vault_key_id",
 		"crypto_version", "created_at", "updated_at",
 	}
@@ -89,39 +95,96 @@ func applyMigrations(db *sql.DB) (bool, error) {
 		return false, nil
 	}
 
-	// No schema_migrations record for version 2. Fall back to PRAGMA user_version.
-	var userVer int
-	if err := db.QueryRow("PRAGMA user_version").Scan(&userVer); err != nil {
+	ver, err := schemaVersion(db)
+	if err != nil {
 		return false, err
 	}
-	if userVer == currentSchemaVersion {
-		// Database already current but not tracked; record it.
+	switch {
+	case ver == currentSchemaVersion:
 		if err := recordMigration(db, currentSchemaVersion); err != nil {
 			return false, err
 		}
-		return false, nil
-	}
-	if userVer > currentSchemaVersion {
+		_, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", currentSchemaVersion))
+		return false, err
+	case ver == 2:
+		return migrateV2ToV3(db)
+	case ver > currentSchemaVersion:
 		return true, nil
-	}
-	if userVer == 1 {
-		// Old-style v2 storage that set PRAGMA user_version to 1. Verify the
-		// table has the expected columns; if so, it is the current schema.
+	default:
+		// Early v2 databases recorded user_version 0 or 1; recognise them by
+		// their columns so their credentials are migrated rather than refused.
 		columns, err := getColumns(db, "credentials")
 		if err != nil {
 			return false, err
 		}
-		if hasAll(columns, requiredColumns) {
-			if err := recordMigration(db, currentSchemaVersion); err != nil {
-				return false, err
-			}
-			_, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", currentSchemaVersion))
-			return false, err
+		if hasAll(columns, v2Columns) && !columns["kind"] && !columns["resource"] {
+			return migrateV2ToV3(db)
 		}
 		return handleLegacy(db)
 	}
-	// userVer == 0 or unknown: legacy or fresh database.
-	return handleLegacy(db)
+}
+
+// migrateV2ToV3 rebuilds the credentials table with kind/resource columns.
+// Existing rows become kind='login' with resource=origin.
+func migrateV2ToV3(db *sql.DB) (bool, error) {
+	var n int
+	err := db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='credentials'").Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	if n == 0 {
+		return createCurrentSchema(db)
+	}
+	columns, err := getColumns(db, "credentials")
+	if err != nil {
+		return false, err
+	}
+	if !hasAll(columns, v2Columns) || columns["kind"] || columns["resource"] {
+		return true, nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	stmts := []string{
+		`CREATE TABLE credentials_v3 (
+			id TEXT PRIMARY KEY,
+			kind TEXT NOT NULL,
+			resource TEXT NOT NULL,
+			ciphertext BLOB NOT NULL,
+			cipher_nonce BLOB NOT NULL,
+			wrapped_dek BLOB NOT NULL,
+			wrap_nonce BLOB NOT NULL,
+			wrap_ephemeral_public_key BLOB NOT NULL,
+			pixel_vault_key_id TEXT NOT NULL,
+			crypto_version INTEGER NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			UNIQUE(kind, resource)
+		)`,
+		`INSERT INTO credentials_v3
+			(id, kind, resource, ciphertext, cipher_nonce, wrapped_dek, wrap_nonce, wrap_ephemeral_public_key, pixel_vault_key_id, crypto_version, created_at, updated_at)
+		SELECT id, 'login', origin, ciphertext, cipher_nonce, wrapped_dek, wrap_nonce, wrap_ephemeral_public_key, pixel_vault_key_id, crypto_version, created_at, updated_at
+		FROM credentials`,
+		`DROP TABLE credentials`,
+		`ALTER TABLE credentials_v3 RENAME TO credentials`,
+	}
+	for _, s := range stmts {
+		if _, err := tx.Exec(s); err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	if err := recordMigration(db, currentSchemaVersion); err != nil {
+		return false, err
+	}
+	_, err = db.Exec(fmt.Sprintf("PRAGMA user_version = %d", currentSchemaVersion))
+	return false, err
 }
 
 func handleLegacy(db *sql.DB) (bool, error) {
@@ -166,7 +229,8 @@ func createCurrentSchema(db *sql.DB) (bool, error) {
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS credentials (
 			id TEXT PRIMARY KEY,
-			origin TEXT NOT NULL UNIQUE,
+			kind TEXT NOT NULL,
+			resource TEXT NOT NULL,
 			ciphertext BLOB NOT NULL,
 			cipher_nonce BLOB NOT NULL,
 			wrapped_dek BLOB NOT NULL,
@@ -175,8 +239,9 @@ func createCurrentSchema(db *sql.DB) (bool, error) {
 			pixel_vault_key_id TEXT NOT NULL,
 			crypto_version INTEGER NOT NULL,
 			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
-		);
+			updated_at TEXT NOT NULL,
+			UNIQUE(kind, resource)
+		)
 	`)
 	if err != nil {
 		return false, err
@@ -223,20 +288,20 @@ func schemaVersion(db *sql.DB) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if len(applied) > 0 {
-		max := 0
-		for v := range applied {
-			if v > max {
-				max = v
-			}
+	max := 0
+	for v := range applied {
+		if v > max {
+			max = v
 		}
-		return max, nil
 	}
-	var v int
-	if err := db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
+	var pragma int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&pragma); err != nil {
 		return 0, err
 	}
-	return v, nil
+	if pragma > max {
+		return pragma, nil
+	}
+	return max, nil
 }
 
 func validateSchema(db *sql.DB) error {
@@ -286,8 +351,59 @@ func hasAll(have map[string]bool, want []string) bool {
 	return true
 }
 
+// packageRow is the internal storage representation.
+type packageRow struct {
+	id                     string
+	kind                   string
+	resource               string
+	ciphertext             string
+	cipherNonce            string
+	wrappedDEK             string
+	wrapNonce              string
+	wrapEphemeralPublicKey string
+	pixelVaultKeyID        string
+	cryptoVersion          int
+	createdAt              string
+	updatedAt              string
+}
+
+func scanPackageRow(row interface{ Scan(...interface{}) error }) (*packageRow, error) {
+	var r packageRow
+	err := row.Scan(&r.id, &r.kind, &r.resource, &r.ciphertext, &r.cipherNonce, &r.wrappedDEK,
+		&r.wrapNonce, &r.wrapEphemeralPublicKey, &r.pixelVaultKeyID, &r.cryptoVersion,
+		&r.createdAt, &r.updatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+func (r *packageRow) toPackage() model.CredentialPackage {
+	pkg := model.CredentialPackage{
+		CredentialID:           r.id,
+		Ciphertext:             r.ciphertext,
+		CipherNonce:            r.cipherNonce,
+		WrappedDEK:             r.wrappedDEK,
+		WrapNonce:              r.wrapNonce,
+		WrapEphemeralPublicKey: r.wrapEphemeralPublicKey,
+		PixelVaultKeyID:        r.pixelVaultKeyID,
+		CryptoVersion:          r.cryptoVersion,
+	}
+	if r.cryptoVersion == 2 {
+		pkg.Origin = r.resource
+	} else {
+		pkg.Kind = r.kind
+		pkg.Resource = r.resource
+	}
+	return pkg
+}
+
+const packageColumns = `id, kind, resource, ciphertext, cipher_nonce, wrapped_dek,
+	wrap_nonce, wrap_ephemeral_public_key, pixel_vault_key_id,
+	crypto_version, created_at, updated_at`
+
 func (d *DB) CreateCredential(ctx context.Context, in model.CredentialPackageInput) (model.CredentialPackage, error) {
-	if in.CryptoVersion != 2 {
+	if in.CryptoVersion != 2 && in.CryptoVersion != 3 {
 		return model.CredentialPackage{}, fmt.Errorf("unsupported crypto version %d", in.CryptoVersion)
 	}
 	if in.CredentialID == "" {
@@ -296,10 +412,26 @@ func (d *DB) CreateCredential(ctx context.Context, in model.CredentialPackageInp
 	if _, err := hex.DecodeString(in.CredentialID); err != nil {
 		return model.CredentialPackage{}, fmt.Errorf("credential_id must be lowercase hex")
 	}
-	if in.Origin == "" {
-		return model.CredentialPackage{}, fmt.Errorf("origin is required")
+
+	kind := model.KindLogin
+	var resource string
+	var err error
+	if in.CryptoVersion == 2 {
+		if in.Origin == "" {
+			return model.CredentialPackage{}, fmt.Errorf("origin is required")
+		}
+		resource, err = model.NormalizeOrigin(in.Origin)
+	} else {
+		kind = in.Kind
+		raw := in.Resource
+		if raw == "" {
+			raw = in.Origin // tolerate clients that still send origin
+		}
+		if kind == "" {
+			kind = model.KindLogin
+		}
+		resource, err = model.NormalizeResource(kind, raw)
 	}
-	origin, err := model.NormalizeOrigin(in.Origin)
 	if err != nil {
 		return model.CredentialPackage{}, err
 	}
@@ -322,51 +454,89 @@ func (d *DB) CreateCredential(ctx context.Context, in model.CredentialPackageInp
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err = d.db.ExecContext(ctx, `
 		INSERT INTO credentials
-			(id, origin, ciphertext, cipher_nonce, wrapped_dek, wrap_nonce, wrap_ephemeral_public_key, pixel_vault_key_id, crypto_version, created_at, updated_at)
+			(id, kind, resource, ciphertext, cipher_nonce, wrapped_dek, wrap_nonce, wrap_ephemeral_public_key, pixel_vault_key_id, crypto_version, created_at, updated_at)
 		VALUES
-			(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, in.CredentialID, origin, in.Ciphertext, in.CipherNonce, in.WrappedDEK, in.WrapNonce, in.WrapEphemeralPublicKey, in.PixelVaultKeyID, in.CryptoVersion, now, now)
+			(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, in.CredentialID, kind, resource, in.Ciphertext, in.CipherNonce, in.WrappedDEK, in.WrapNonce, in.WrapEphemeralPublicKey, in.PixelVaultKeyID, in.CryptoVersion, now, now)
 	if err != nil {
 		if isConflict(err) {
-			return model.CredentialPackage{}, fmt.Errorf("credential already exists for origin")
+			return model.CredentialPackage{}, fmt.Errorf("credential already exists for %s %s", kind, resource)
 		}
 		return model.CredentialPackage{}, err
 	}
-	return d.getByOrigin(ctx, origin)
+	return d.GetPackageByResource(ctx, resource, kind)
 }
 
-func (d *DB) GetPackageByOrigin(ctx context.Context, rawOrigin string) (model.CredentialPackage, error) {
-	origin, err := model.NormalizeOrigin(rawOrigin)
+// GetPackageByResource fetches a package by resource. If kind is empty, any
+// kind may match; multiple matches return ErrAmbiguous.
+func (d *DB) GetPackageByResource(ctx context.Context, rawResource, kind string) (model.CredentialPackage, error) {
+	resource, err := normalizeLookupResource(rawResource, kind)
 	if err != nil {
 		return model.CredentialPackage{}, err
 	}
-	return d.getByOrigin(ctx, origin)
-}
-
-func (d *DB) getByOrigin(ctx context.Context, origin string) (model.CredentialPackage, error) {
-	var pkg model.CredentialPackage
-	var created, updated string
-	err := d.db.QueryRowContext(ctx, `
-		SELECT id, origin, ciphertext, cipher_nonce, wrapped_dek, wrap_nonce, wrap_ephemeral_public_key, pixel_vault_key_id, crypto_version, created_at, updated_at
-		FROM credentials
-		WHERE origin = ?
-	`, origin).Scan(&pkg.CredentialID, &pkg.Origin, &pkg.Ciphertext, &pkg.CipherNonce, &pkg.WrappedDEK, &pkg.WrapNonce, &pkg.WrapEphemeralPublicKey, &pkg.PixelVaultKeyID, &pkg.CryptoVersion, &created, &updated)
+	query := `SELECT ` + packageColumns + ` FROM credentials WHERE resource = ?`
+	args := []interface{}{resource}
+	if kind != "" {
+		query += ` AND kind = ?`
+		args = append(args, kind)
+	}
+	rows, err := d.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return model.CredentialPackage{}, ErrNotFound
+		return model.CredentialPackage{}, err
+	}
+	defer rows.Close()
+	var found *packageRow
+	count := 0
+	for rows.Next() {
+		r, err := scanPackageRow(rows)
+		if err != nil {
+			return model.CredentialPackage{}, err
 		}
+		found = r
+		count++
+	}
+	if err := rows.Err(); err != nil {
 		return model.CredentialPackage{}, err
 	}
-	return pkg, nil
+	if count == 0 {
+		return model.CredentialPackage{}, ErrNotFound
+	}
+	if count > 1 {
+		return model.CredentialPackage{}, ErrAmbiguous
+	}
+	return found.toPackage(), nil
 }
 
-func (d *DB) Exists(ctx context.Context, rawOrigin string) (bool, error) {
-	origin, err := model.NormalizeOrigin(rawOrigin)
+// normalizeLookupResource validates a lookup resource. Origins are normalized
+// as login resources; other resources are accepted as secret names. When the
+// caller supplies a kind, the matching rules apply.
+func normalizeLookupResource(raw, kind string) (string, error) {
+	if kind == model.KindLogin || kind == "" {
+		if n, err := model.NormalizeOrigin(raw); err == nil {
+			return n, nil
+		}
+	}
+	if kind == "" || kind == model.KindSecret || kind == model.KindSSHKey {
+		if n, err := model.NormalizeSecretName(raw); err == nil {
+			return n, nil
+		}
+	}
+	return "", fmt.Errorf("invalid resource %q", raw)
+}
+
+func (d *DB) Exists(ctx context.Context, rawResource, kind string) (bool, error) {
+	resource, err := normalizeLookupResource(rawResource, kind)
 	if err != nil {
 		return false, err
 	}
+	query := `SELECT COUNT(*) FROM credentials WHERE resource = ?`
+	args := []interface{}{resource}
+	if kind != "" {
+		query += ` AND kind = ?`
+		args = append(args, kind)
+	}
 	var n int
-	err = d.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM credentials WHERE origin = ?", origin).Scan(&n)
+	err = d.db.QueryRowContext(ctx, query, args...).Scan(&n)
 	if err != nil {
 		return false, err
 	}
@@ -375,9 +545,9 @@ func (d *DB) Exists(ctx context.Context, rawOrigin string) (bool, error) {
 
 func (d *DB) List(ctx context.Context) ([]model.CredentialMeta, error) {
 	rows, err := d.db.QueryContext(ctx, `
-		SELECT id, origin, pixel_vault_key_id, crypto_version, created_at, updated_at
+		SELECT id, kind, resource, pixel_vault_key_id, crypto_version, created_at, updated_at
 		FROM credentials
-		ORDER BY origin
+		ORDER BY kind, resource
 	`)
 	if err != nil {
 		return nil, err
@@ -386,7 +556,7 @@ func (d *DB) List(ctx context.Context) ([]model.CredentialMeta, error) {
 	var out []model.CredentialMeta
 	for rows.Next() {
 		var m model.CredentialMeta
-		if err := rows.Scan(&m.CredentialID, &m.Origin, &m.PixelVaultKeyID, &m.CryptoVersion, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		if err := rows.Scan(&m.CredentialID, &m.Kind, &m.Resource, &m.PixelVaultKeyID, &m.CryptoVersion, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, m)

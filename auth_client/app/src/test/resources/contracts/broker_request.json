@@ -3,7 +3,7 @@
   "source": "universal-auth",
   "kind": "credential_release",
   "resource": "https://example.com",
-  "message": "Release saved login credential for https://example.com",
+  "message": "Release saved credential for https://example.com",
   "challenge": "challenge-value",
   "client_nonce": "client-nonce-1",
   "status": "pending",

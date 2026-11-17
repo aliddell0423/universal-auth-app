@@ -100,6 +100,7 @@ func TestContractCanonicalReleaseRequestString(t *testing.T) {
 	expected := strings.TrimSpace(string(data))
 
 	actual := strings.TrimSpace(string(canonicalReleaseRequest(
+		2,
 		"req-abc123",
 		"challenge-value",
 		"client-nonce-1",
@@ -137,11 +138,50 @@ func TestContractReleaseResponseFields(t *testing.T) {
 	}
 }
 
+func TestContractVaultPackageV3Canonical(t *testing.T) {
+	data, err := os.ReadFile(contractPath("vault_package_v3_canonical.txt"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	expected := strings.TrimSpace(string(data))
+
+	pkg := &vaultcrypto.Package{
+		CredentialID:           "cred-123",
+		Kind:                   "login",
+		Resource:               "https://example.com",
+		Ciphertext:             "Y2lwaGVydGV4dA",
+		CipherNonce:            "Y2lwaGVyLW5vbmNl",
+		WrappedDEK:             "d3JhcHBlZC1kZWs",
+		WrapNonce:              "d3JhcC1ub25jZQ",
+		WrapEphemeralPublicKey: "d3JhcC1lcGhlbWVyYWwtcHVibGljLWtleQ",
+		PixelVaultKeyID:        "pixel-key-1",
+		CryptoVersion:          3,
+	}
+
+	canonical := strings.TrimSpace(string(vaultcrypto.Canonical(pkg)))
+	if canonical != expected {
+		t.Fatalf("canonical package mismatch\nexpected:\n%s\n\nactual:\n%s", expected, canonical)
+	}
+	if vaultcrypto.Hash(pkg) != "cdR0geVwyC-m_O6Je3Y48iDPsMgTW40LJFEQG8o8weY" {
+		t.Fatalf("unexpected v3 package hash")
+	}
+}
+
 func packageFromCanonical(t *testing.T, s string) *vaultcrypto.Package {
 	t.Helper()
 	lines := strings.Split(strings.TrimSpace(s), "\n")
-	if len(lines) == 0 || lines[0] != "universal-auth:vault-package:v2" {
+	if len(lines) == 0 {
 		t.Fatalf("invalid package header")
+	}
+	var version int
+	switch lines[0] {
+	case "universal-auth:vault-package:v2":
+		version = 2
+	case "universal-auth:vault-package:v3":
+		version = 3
+	default:
+		t.Fatalf("invalid package header %q", lines[0])
 	}
 	m := make(map[string]string)
 	for _, line := range lines[1:] {
@@ -166,9 +206,8 @@ func packageFromCanonical(t *testing.T, s string) *vaultcrypto.Package {
 	if err != nil {
 		t.Fatalf("invalid crypto_version: %v", err)
 	}
-	return &vaultcrypto.Package{
+	pkg := &vaultcrypto.Package{
 		CredentialID:           decode("credential_id"),
-		Origin:                 decode("origin"),
 		Ciphertext:             m["ciphertext"],
 		CipherNonce:            m["cipher_nonce"],
 		WrappedDEK:             m["wrapped_dek"],
@@ -177,4 +216,11 @@ func packageFromCanonical(t *testing.T, s string) *vaultcrypto.Package {
 		PixelVaultKeyID:        m["pixel_vault_key_id"],
 		CryptoVersion:          cv,
 	}
+	if version == 3 {
+		pkg.Kind = decode("kind")
+		pkg.Resource = decode("resource")
+	} else {
+		pkg.Origin = decode("origin")
+	}
+	return pkg
 }

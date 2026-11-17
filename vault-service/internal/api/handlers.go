@@ -105,7 +105,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		msg := err.Error()
 		if strings.Contains(msg, "already exists") {
-			writeApiError(w, http.StatusConflict, "UA-VAULT-002", "vault.create", "credential already exists for origin", "Delete the existing credential first.", false)
+			writeApiError(w, http.StatusConflict, "UA-VAULT-002", "vault.create", "credential already exists for this resource", "Delete the existing credential first.", false)
 		} else if strings.Contains(msg, "required") || strings.Contains(msg, "unsupported") || strings.Contains(msg, "must") || strings.Contains(msg, "wrap_ephemeral") {
 			writeApiError(w, http.StatusBadRequest, "UA-VAULT-003", "vault.create", msg, "Check the credential package.", false)
 		} else {
@@ -114,7 +114,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, pkg)
-	log.Printf("[trace=%s] package stored id=%s origin=%s", traceID(r), pkg.CredentialID, pkg.Origin)
+	log.Printf("[trace=%s] package stored id=%s resource=%s kind=%s", traceID(r), pkg.CredentialID, pkg.Resource+pkg.Origin, pkg.Kind)
 }
 
 func (s *Server) handleExists(w http.ResponseWriter, r *http.Request) {
@@ -122,18 +122,18 @@ func (s *Server) handleExists(w http.ResponseWriter, r *http.Request) {
 		writeApiError(w, http.StatusMethodNotAllowed, "UA-VAULT-007", "vault.exists", "method not allowed", "Use GET.", false)
 		return
 	}
-	origin := r.URL.Query().Get("origin")
-	if origin == "" {
-		writeApiError(w, http.StatusBadRequest, "UA-VAULT-003", "vault.exists", "origin query parameter is required", "Provide an origin.", false)
+	resource, kind := resourceParams(r)
+	if resource == "" {
+		writeApiError(w, http.StatusBadRequest, "UA-VAULT-003", "vault.exists", "resource query parameter is required", "Provide a resource.", false)
 		return
 	}
-	exists, err := s.store.Exists(r.Context(), origin)
+	exists, err := s.store.Exists(r.Context(), resource, kind)
 	if err != nil {
 		writeApiError(w, http.StatusInternalServerError, "UA-VAULT-004", "vault.exists", "Failed to check credential existence.", "Check the vault service logs.", false)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"exists": exists})
-	log.Printf("[trace=%s] exists checked origin=%s exists=%v", traceID(r), origin, exists)
+	log.Printf("[trace=%s] exists checked resource=%s kind=%s exists=%v", traceID(r), resource, kind, exists)
 }
 
 func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request) {
@@ -141,22 +141,26 @@ func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request) {
 		writeApiError(w, http.StatusMethodNotAllowed, "UA-VAULT-007", "vault.package_fetch", "method not allowed", "Use GET.", false)
 		return
 	}
-	origin := r.URL.Query().Get("origin")
-	if origin == "" {
-		writeApiError(w, http.StatusBadRequest, "UA-VAULT-003", "vault.package_fetch", "origin query parameter is required", "Provide an origin.", false)
+	resource, kind := resourceParams(r)
+	if resource == "" {
+		writeApiError(w, http.StatusBadRequest, "UA-VAULT-003", "vault.package_fetch", "resource query parameter is required", "Provide a resource.", false)
 		return
 	}
-	pkg, err := s.store.GetPackageByOrigin(r.Context(), origin)
+	pkg, err := s.store.GetPackageByResource(r.Context(), resource, kind)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeApiError(w, http.StatusNotFound, "UA-VAULT-002", "vault.package_fetch", "credential not found", "Store a credential for this origin.", false)
+			writeApiError(w, http.StatusNotFound, "UA-VAULT-002", "vault.package_fetch", "credential not found", "Store a credential for this resource.", false)
+			return
+		}
+		if errors.Is(err, store.ErrAmbiguous) {
+			writeApiError(w, http.StatusConflict, "UA-VAULT-002", "vault.package_fetch", "multiple credentials match resource", "Specify the kind query parameter.", false)
 			return
 		}
 		writeApiError(w, http.StatusInternalServerError, "UA-VAULT-004", "vault.package_fetch", "Failed to retrieve credential.", "Check the vault service logs.", false)
 		return
 	}
 	writeJSON(w, http.StatusOK, pkg)
-	log.Printf("[trace=%s] package fetched origin=%s", traceID(r), pkg.Origin)
+	log.Printf("[trace=%s] package fetched resource=%s kind=%s", traceID(r), pkg.Resource+pkg.Origin, pkg.Kind)
 }
 
 func (s *Server) handleCredentialByID(w http.ResponseWriter, r *http.Request) {
@@ -193,6 +197,17 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 		return errors.New("trailing data in request body")
 	}
 	return nil
+}
+
+// resourceParams extracts the resource and optional kind query parameters.
+// The legacy "origin" parameter is accepted as an alias for resource.
+func resourceParams(r *http.Request) (resource, kind string) {
+	resource = r.URL.Query().Get("resource")
+	if resource == "" {
+		resource = r.URL.Query().Get("origin")
+	}
+	kind = r.URL.Query().Get("kind")
+	return resource, kind
 }
 
 func traceID(r *http.Request) string {

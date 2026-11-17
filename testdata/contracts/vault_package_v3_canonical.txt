@@ -1,0 +1,11 @@
+universal-auth:vault-package:v3
+credential_id=Y3JlZC0xMjM
+kind=bG9naW4
+resource=aHR0cHM6Ly9leGFtcGxlLmNvbQ
+ciphertext=Y2lwaGVydGV4dA
+cipher_nonce=Y2lwaGVyLW5vbmNl
+wrapped_dek=d3JhcHBlZC1kZWs
+wrap_nonce=d3JhcC1ub25jZQ
+wrap_ephemeral_public_key=d3JhcC1lcGhlbWVyYWwtcHVibGljLWtleQ
+pixel_vault_key_id=pixel-key-1
+crypto_version=3

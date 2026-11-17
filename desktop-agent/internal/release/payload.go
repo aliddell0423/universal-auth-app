@@ -14,26 +14,40 @@ import (
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/vaultcrypto"
 )
 
+const ReleaseProtocolV1 = "universal-auth:secure-release:v1"
+const ReleaseProtocolV2 = "universal-auth:secure-release:v2"
+
+// canonicalReleaseRequest builds the signed payload the Pixel verifies.
+// v2 uses resource (origin for logins, name for secrets); v1 uses origin.
 func canonicalReleaseRequest(
+	version int,
 	requestID,
 	challenge,
 	clientNonce,
 	desktopID,
 	kind,
-	origin,
+	resource,
 	credentialID,
 	packageHash,
 	desktopEphemeralPub,
 	pixelVaultKeyID string,
 ) []byte {
 	var buf bytes.Buffer
-	fmt.Fprint(&buf, "universal-auth:secure-release-request:v1\n")
+	if version == 2 {
+		fmt.Fprint(&buf, "universal-auth:secure-release-request:v2\n")
+	} else {
+		fmt.Fprint(&buf, "universal-auth:secure-release-request:v1\n")
+	}
 	fmt.Fprintf(&buf, "request_id=%s\n", b64urlutf8(requestID))
 	fmt.Fprintf(&buf, "challenge=%s\n", challenge)
 	fmt.Fprintf(&buf, "client_nonce=%s\n", clientNonce)
 	fmt.Fprintf(&buf, "desktop_id=%s\n", desktopID)
 	fmt.Fprintf(&buf, "kind=%s\n", b64urlutf8(kind))
-	fmt.Fprintf(&buf, "origin=%s\n", b64urlutf8(origin))
+	if version == 2 {
+		fmt.Fprintf(&buf, "resource=%s\n", b64urlutf8(resource))
+	} else {
+		fmt.Fprintf(&buf, "origin=%s\n", b64urlutf8(resource))
+	}
 	fmt.Fprintf(&buf, "credential_id=%s\n", b64urlutf8(credentialID))
 	fmt.Fprintf(&buf, "package_hash=%s\n", packageHash)
 	fmt.Fprintf(&buf, "desktop_ephemeral_public_key=%s\n", desktopEphemeralPub)
@@ -46,53 +60,63 @@ func b64urlutf8(s string) string {
 }
 
 func transferSalt(
+	version int,
 	requestID,
 	challenge,
 	clientNonce,
 	desktopID,
 	credentialID,
-	origin,
+	resource,
 	packageHash,
 	pixelVaultKeyID string,
 ) []byte {
-	msg := fmt.Sprintf("universal-auth:release-transfer-salt:v1\n"+
+	resourceKey := "origin"
+	if version == 2 {
+		resourceKey = "resource"
+	}
+	msg := fmt.Sprintf("universal-auth:release-transfer-salt:v%d\n"+
 		"request_id=%s\n"+
 		"challenge=%s\n"+
 		"client_nonce=%s\n"+
 		"desktop_id=%s\n"+
 		"credential_id=%s\n"+
-		"origin=%s\n"+
+		"%s=%s\n"+
 		"package_hash=%s\n"+
 		"pixel_vault_key_id=%s\n",
-		requestID, challenge, clientNonce, desktopID, credentialID, origin, packageHash, pixelVaultKeyID)
+		version, requestID, challenge, clientNonce, desktopID, credentialID, resourceKey, resource, packageHash, pixelVaultKeyID)
 	sum := sha256.Sum256([]byte(msg))
 	return sum[:]
 }
 
 func transferAAD(
+	version int,
 	requestID,
 	challenge,
 	clientNonce,
 	desktopID,
 	credentialID,
-	origin,
+	resource,
 	packageHash,
 	pixelVaultKeyID,
 	fedoraEphemeralPub,
 	pixelEphemeralPub string,
 ) []byte {
-	return []byte(fmt.Sprintf("universal-auth:release-dek:v1\n"+
+	resourceKey := "origin"
+	if version == 2 {
+		resourceKey = "resource"
+	}
+	return []byte(fmt.Sprintf("universal-auth:release-dek:v%d\n"+
 		"request_id=%s\n"+
 		"challenge=%s\n"+
 		"client_nonce=%s\n"+
 		"desktop_id=%s\n"+
 		"credential_id=%s\n"+
-		"origin=%s\n"+
+		"%s=%s\n"+
 		"package_hash=%s\n"+
 		"pixel_vault_key_id=%s\n"+
 		"fedora_ephemeral_public_key=%s\n"+
 		"pixel_ephemeral_public_key=%s\n",
-		requestID, challenge, clientNonce, desktopID, credentialID, origin, packageHash, pixelVaultKeyID, fedoraEphemeralPub, pixelEphemeralPub))
+		version, requestID, challenge, clientNonce, desktopID, credentialID, resourceKey, resource, packageHash, pixelVaultKeyID, fedoraEphemeralPub, pixelEphemeralPub))
 }
 
 func deriveTransferKey(secret, salt, info []byte) ([]byte, error) {

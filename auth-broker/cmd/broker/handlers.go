@@ -470,8 +470,8 @@ func handleAttachReleaseRequest(w http.ResponseWriter, r *http.Request, store *S
 		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.attach_release", "malformed or invalid JSON", "Check the request body.", false)
 		return
 	}
-	if req.Protocol != "universal-auth:secure-release:v1" {
-		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.attach_release", "unsupported release protocol", "Use universal-auth:secure-release:v1.", false)
+	if req.Protocol != "universal-auth:secure-release:v1" && req.Protocol != "universal-auth:secure-release:v2" {
+		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.attach_release", "unsupported release protocol", "Use universal-auth:secure-release:v1 or v2.", false)
 		return
 	}
 	if req.DesktopID == "" || req.DesktopAlgorithm == "" || req.DesktopEphemeralPublic == "" || req.CredentialPackage == "" || req.PackageHash == "" || req.DesktopSignature == "" {
@@ -505,7 +505,7 @@ func handleAttachReleaseResponse(w http.ResponseWriter, r *http.Request, store *
 		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.attach_release_response", "malformed or invalid JSON", "Check the request body.", false)
 		return
 	}
-	if resp.Protocol != "universal-auth:secure-release:v1" || resp.CredentialID == "" || resp.PackageHash == "" || resp.PixelVaultKeyID == "" || resp.PixelEphemeralPublic == "" || resp.TransferNonce == "" || resp.EncryptedDEK == "" {
+	if (resp.Protocol != "universal-auth:secure-release:v1" && resp.Protocol != "universal-auth:secure-release:v2") || resp.CredentialID == "" || resp.PackageHash == "" || resp.PixelVaultKeyID == "" || resp.PixelEphemeralPublic == "" || resp.TransferNonce == "" || resp.EncryptedDEK == "" {
 		writeApiError(w, http.StatusBadRequest, "UA-BROKER-003", "broker.attach_release_response", "missing required release response fields", "Check the secure release response.", false)
 		return
 	}

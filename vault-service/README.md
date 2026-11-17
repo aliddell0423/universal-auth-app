@@ -39,10 +39,11 @@ go build -o vault-service ./cmd/vault-service
 - `GET /healthz`
 - `GET /v1/credentials` — list metadata only (no passwords).
 - `POST /v1/credentials` — create credential.
-- `GET /v1/credentials/exists?origin=...` — return `{"exists": true}`.
-- `GET /v1/credentials/by-origin?origin=...` — retrieve full credential.
-- `PUT /v1/credentials/{id}` — update.
+- `GET /v1/credentials/exists?resource=...[&kind=...]` — return `{"exists": true}`.
+- `GET /v1/credentials/package?resource=...[&kind=...]` — retrieve the encrypted package. Returns 409 if the resource exists under several kinds and no `kind` is given.
 - `DELETE /v1/credentials/{id}` — delete.
+
+`resource` is a web origin for `login` packages or a secret name for `secret` and `ssh_key` packages; `origin=` is still accepted as an alias. The list response carries `kind` and `resource` for each entry.
 
 All `/v1/*` endpoints require `Authorization: Bearer <VAULT_TOKEN>`.
 
