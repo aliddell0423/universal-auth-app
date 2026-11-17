@@ -363,6 +363,59 @@ Firefox autofill still works: `ua-browser-host` fetches the ciphertext package f
 
 Existing generic `authctl request` approvals and the Pixel approval signing key continue to work unchanged.
 
+## Secrets and SSH keys (package v3, Secure Release v2)
+
+Besides website logins, the vault stores generic secrets and SSH keys. A v3 package has a `kind` and a `resource`, and its plaintext is a map of named fields:
+
+| Kind | Resource | Typical fields |
+| --- | --- | --- |
+| `login` | web origin, e.g. `https://github.com` | `username`, `password` |
+| `secret` | name, e.g. `api-keys/openai` | any `KEY=VALUE` pairs |
+| `ssh_key` | name, e.g. `ssh/github` | `private_key`, optional `passphrase`, `comment` |
+
+Names are lowercase letters, digits and `. _ - /`, up to 128 characters. Kind and resource are bound into the package hash, the wrap key and the AEAD associated data, and the Pixel shows the resource it is releasing. Existing v2 login packages keep working, and the vault database is migrated in place on first start.
+
+```bash
+cd desktop-agent
+
+# store
+go run ./cmd/vaultctl add --origin https://github.com --username andrew
+go run ./cmd/vaultctl add --kind secret --name api-keys/openai --field API_KEY=sk-... --field ORG=me
+go run ./cmd/vaultctl add --kind ssh_key --name ssh/github --field-file private_key=$HOME/.ssh/id_ed25519
+
+# inspect (metadata only, no approval needed)
+go run ./cmd/vaultctl list
+
+# release: each call needs one approval on the Pixel
+go run ./cmd/vaultctl get --name api-keys/openai --field API_KEY
+go run ./cmd/vaultctl get --name api-keys/openai --json
+export OPENAI_API_KEY="$(vaultctl get --name api-keys/openai --field API_KEY)"
+```
+
+`--field KEY=VALUE` puts the value in your shell history and process list; prefer `--field-file KEY=PATH` for anything sensitive.
+
+### SSH agent
+
+`ua-ssh-agent` serves the SSH agent protocol on a `0600` unix socket and never keeps a private key. Every signature request releases the key from the vault (one Pixel approval and fingerprint), signs once, and drops it. Ed25519, ECDSA (P-256/384/521) and RSA keys are supported.
+
+```bash
+go build -o ~/.local/bin/ua-ssh-agent ./cmd/ua-ssh-agent
+
+ua-ssh-agent                       # offer every ssh_key in the vault
+ua-ssh-agent --name ssh/github     # or only the named ones
+
+export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/ua-ssh-agent.sock"
+ssh-add -l
+```
+
+Listing keys needs no approval: `vaultctl add --kind ssh_key` saves the public half in `~/.config/universal-auth/ssh-public-keys.json`. On a machine without that entry the agent asks for one approval at startup to learn the public key. Before signing, the agent checks that the released key matches the public key it advertised.
+
+The Pixel refuses a release when the resource shown in the approval prompt differs from the one inside the signed package.
+
+### Upgrade order
+
+Desktop tools now speak Secure Release v2, which older builds reject. Deploy the broker and vault service (`./scripts/deploy-dev.sh`), install the updated Android app, then rebuild the desktop binaries (`vaultctl`, `ua-browser-host`, `ua-ssh-agent`).
+
 ## Security notes
 
 - Never commit `BROKER_TOKEN`, `VAULT_TOKEN`, SSH private keys, passwords, `broker.token`, `vault.token`, `identity.key`, or `vault.db` to this repository.

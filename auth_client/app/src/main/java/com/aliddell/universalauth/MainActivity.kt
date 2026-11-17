@@ -127,6 +127,7 @@ class MainActivity : FragmentActivity() {
             })
 
         try {
+            val needed = mutableListOf<String>()
             if (
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                 ContextCompat.checkSelfPermission(
@@ -134,11 +135,19 @@ class MainActivity : FragmentActivity() {
                     Manifest.permission.POST_NOTIFICATIONS
                 ) != PackageManager.PERMISSION_GRANTED
             ) {
-                ActivityCompat.requestPermissions(
+                needed.add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            if (
+                Build.VERSION.SDK_INT >= 37 &&
+                ContextCompat.checkSelfPermission(
                     this,
-                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-                    1001
-                )
+                    "android.permission.ACCESS_LOCAL_NETWORK"
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                needed.add("android.permission.ACCESS_LOCAL_NETWORK")
+            }
+            if (needed.isNotEmpty()) {
+                ActivityCompat.requestPermissions(this, needed.toTypedArray(), 1001)
             }
 
             keyManager.ensureKey()
@@ -215,7 +224,7 @@ class MainActivity : FragmentActivity() {
             val promptInfo = BiometricPrompt.PromptInfo.Builder()
                 .setTitle("Release credential")
                 .setSubtitle("${request.source} / ${request.resource}")
-                .setDescription("Authenticate to release this saved login")
+                .setDescription("Authenticate to release the requested credential")
                 .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
                 .setConfirmationRequired(true)
                 .setNegativeButtonText("Cancel")
