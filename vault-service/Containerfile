@@ -10,6 +10,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags="-w -s" -o 
 
 FROM scratch
 COPY --from=builder --chown=0:0 /build/vault-service /vault-service
+COPY --from=builder --chown=0:0 /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 USER 0:0
 WORKDIR /data
 EXPOSE 8081

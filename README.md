@@ -315,6 +315,8 @@ On the VM create `~/.config/universal-auth-vault/vault.env` with `VAULT_TOKEN` a
 
 This builds and deploys both `auth-broker` and `vault-service`, bind-mounting `~/.local/share/universal-auth/vault` to `/data` for persistence.
 
+Push notifications: when `FCM_SERVICE_ACCOUNT_FILE` is set in `~/.config/auth-broker/auth-broker.env` (a Firebase Admin SDK service-account JSON, stored inside the broker's `/data` mount), the broker sends an FCM "credential request" notification for each release request. The app shows it and tapping opens the approval screen; the notification carries only the request ID.
+
 ## Browser extension prototype
 
 `browser-extension/` is a Firefox MV3 prototype that fills a login form after Pixel biometric approval. It uses the `vault-service` for credential storage.

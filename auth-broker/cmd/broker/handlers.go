@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/subtle"
@@ -12,8 +13,10 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"auth-broker/internal/model"
+	"auth-broker/internal/push"
 )
 
 const (
@@ -73,12 +76,16 @@ type PushRegistrationResponse struct {
 }
 
 func newServer(store *Store, token string) http.Handler {
+	return newServerWithPush(store, token, push.NopSender{})
+}
+
+func newServerWithPush(store *Store, token string, pusher push.Sender) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", handleHealth)
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) { handleReady(w, r, store) })
 	mux.HandleFunc("/v1/requests/pending", func(w http.ResponseWriter, r *http.Request) { handleListPending(w, r, store) })
 	mux.HandleFunc("/v1/requests/", func(w http.ResponseWriter, r *http.Request) { handleRequestByID(w, r, store) })
-	mux.HandleFunc("/v1/requests", func(w http.ResponseWriter, r *http.Request) { handleCreate(w, r, store) })
+	mux.HandleFunc("/v1/requests", func(w http.ResponseWriter, r *http.Request) { handleCreate(w, r, store, pusher) })
 	mux.HandleFunc("/v1/devices/register", func(w http.ResponseWriter, r *http.Request) { handleRegisterDevice(w, r, store) })
 	mux.HandleFunc("/v1/devices/trusted", func(w http.ResponseWriter, r *http.Request) { handleGetTrustedDevice(w, r, store) })
 	mux.HandleFunc("/v1/devices/push-registration", func(w http.ResponseWriter, r *http.Request) { handlePushRegistration(w, r, store) })
@@ -113,7 +120,7 @@ func handleReady(w http.ResponseWriter, r *http.Request, store *Store) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func handleCreate(w http.ResponseWriter, r *http.Request, store *Store) {
+func handleCreate(w http.ResponseWriter, r *http.Request, store *Store, pusher push.Sender) {
 	if r.Method != http.MethodPost {
 		writeApiError(w, http.StatusMethodNotAllowed, "UA-BROKER-007", "broker.create_request", "method not allowed", "Use POST.", false)
 		return
@@ -139,6 +146,32 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *Store) {
 	}
 	writeJSON(w, http.StatusCreated, req)
 	log.Printf("[trace=%s] [request=%s] created status=pending", req.TraceID, req.ID)
+	notifyPush(store, pusher, req)
+}
+
+// notifyPush delivers a doorbell notification for credential release
+// requests. Push is best-effort: failures are logged, never surfaced to the
+// requester, and carry only the request ID.
+func notifyPush(store *Store, pusher push.Sender, req *Request) {
+	if req.Kind != "credential_release" {
+		return
+	}
+	target, err := store.PushRegistration()
+	if err != nil || target == nil {
+		return
+	}
+	if target.Provider != "fcm" {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := pusher.SendCredentialRequest(ctx, target.InstallationID, req.ID); err != nil {
+			log.Printf("[request=%s] push delivery failed: %v", req.ID, err)
+		} else {
+			log.Printf("[request=%s] push delivered", req.ID)
+		}
+	}()
 }
 
 func handleListPending(w http.ResponseWriter, r *http.Request, store *Store) {

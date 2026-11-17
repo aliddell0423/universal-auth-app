@@ -1,5 +1,12 @@
 package com.aliddell.universalauth
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.os.Build
 import android.util.Log
 import com.aliddell.universalauth.crypto.ApprovalKeyManager
 import com.aliddell.universalauth.data.AuthRepository
@@ -15,6 +22,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 private const val TAG = "UniversalAuthFCM"
+private const val CHANNEL_ID = "credential_requests"
+private const val NOTIFICATION_ID = 42
 
 class UniversalAuthMessagingService : FirebaseMessagingService() {
 
@@ -66,5 +75,38 @@ class UniversalAuthMessagingService : FirebaseMessagingService() {
             return
         }
         Log.d(TAG, "Credential request notification for request=$requestId")
+        showRequestNotification(requestId)
+    }
+
+    private fun showRequestNotification(requestId: String) {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            nm.getNotificationChannel(CHANNEL_ID) == null
+        ) {
+            nm.createNotificationChannel(
+                NotificationChannel(
+                    CHANNEL_ID,
+                    "Credential requests",
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Alerts when a credential release needs approval"
+                }
+            )
+        }
+        val launch = PendingIntent.getActivity(
+            this, 0,
+            packageManager.getLaunchIntentForPackage(packageName),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val notification = Notification.Builder(this, CHANNEL_ID)
+            .setSmallIcon(applicationInfo.icon)
+            .setContentTitle("Universal Auth")
+            .setContentText("A credential release needs your approval")
+            .setContentIntent(launch)
+            .setAutoCancel(true)
+            .setCategory(Notification.CATEGORY_REMINDER)
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
+            .build()
+        nm.notify(NOTIFICATION_ID, notification)
     }
 }

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"auth-broker/internal/push"
 )
 
 func main() {
@@ -27,7 +29,20 @@ func main() {
 	}
 	defer store.Close()
 
-	handler := newServer(store, token)
+	var pusher push.Sender = push.NopSender{}
+	if path := os.Getenv("FCM_SERVICE_ACCOUNT_FILE"); path != "" {
+		sender, err := push.NewFCMSenderFromFile(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to load FCM service account: %v\n", err)
+			os.Exit(1)
+		}
+		pusher = sender
+		fmt.Println("push delivery: FCM enabled")
+	} else {
+		fmt.Println("push delivery: disabled (set FCM_SERVICE_ACCOUNT_FILE to enable)")
+	}
+
+	handler := newServerWithPush(store, token, pusher)
 
 	srv := &http.Server{
 		Addr:         ":8080",
