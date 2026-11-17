@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Universal Auth",
+  "version": "0.1.0",
+  "description": "Universal Auth browser-login prototype",
+  "permissions": [
+    "nativeMessaging",
+    "notifications"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3qlOV2sNVFEb6ZYX8NP/v7EMpOstzEDqN10LVYfInVd9ScQ7Lq7T61kY2OAYHC86c6weYMhX1WpZ7Z8H3mirtoUcp9gRi80CN2nnDxeLwzNrSiTqPk6dvv9o3dCSYl+a0OAotRu93znvPCIUuBzNt1Eupi0jVldEkjUvHVFyJW50sg/Wuc4Ga7MUjiWQ59+7Ej3ckw50Cpd1GOg13y4sGn+UbzaqHtb9WKO2HcHTIjitL9HScfoPsPvz1EFZbnNCPYtjm/lxR0oNFu5kRP120eCDDeRmgngLk100ydeyVtKCkZo76XCWayAKZJ6UklDo1+S91GmvzkfCtAB1a+EAoQIDAQAB"
+}

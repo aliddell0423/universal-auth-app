@@ -1,3 +1,5 @@
+const browser = globalThis.browser ?? globalThis.chrome;
+
 const notificationDedupe = new Map();
 const NOTIFICATION_TTL_MS = 30000;
 

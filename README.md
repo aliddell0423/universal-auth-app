@@ -317,7 +317,9 @@ This builds and deploys both `auth-broker` and `vault-service`, bind-mounting `~
 
 Push notifications: when `FCM_SERVICE_ACCOUNT_FILE` is set in `~/.config/auth-broker/auth-broker.env` (a Firebase Admin SDK service-account JSON, stored inside the broker's `/data` mount), the broker sends an FCM "credential request" notification for each release request. The app shows it and tapping opens the approval screen; the notification carries only the request ID.
 
-## Browser extension prototype
+## Browser extension
+
+Works in Firefox (temporary add-on via `about:debugging`, or the install script) and in Chromium-based browsers such as Brave: load `browser-extension/manifest.chromium.json` unpacked from `brave://extensions` with Developer mode on, after running `browser-extension/scripts/install-chromium-dev.sh` (it builds `ua-browser-host` and writes the native-messaging manifest). The `key` in the Chromium manifest pins the extension ID, which the native host allowlist depends on.
 
 `browser-extension/` is a Firefox MV3 prototype that fills a login form after Pixel biometric approval. It uses the `vault-service` for credential storage.
 

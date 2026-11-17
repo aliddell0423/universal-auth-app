@@ -1,3 +1,5 @@
+const browser = globalThis.browser ?? globalThis.chrome;
+
 let pending = false;
 
 function findUsernameInput(passwordInput) {
