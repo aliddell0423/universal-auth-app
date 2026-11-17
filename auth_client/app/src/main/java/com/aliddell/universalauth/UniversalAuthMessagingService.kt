@@ -29,12 +29,12 @@ class UniversalAuthMessagingService : FirebaseMessagingService() {
     }
 
     override fun onRegistered(installationId: String) {
-        // Cache first so the app can retry after the Pixel is paired. Never log
-        // the installation ID itself.
+        // Cache the ID so a deferred registration can be retried after pairing,
+        // but always attempt the upload. Firebase recommends sending the FID to
+        // the server on every callback, and the broker -- not this local cache --
+        // must stay authoritative about whether the FID is registered. The
+        // installation ID itself is never logged.
         pushStore.installationId = installationId
-        if (pushStore.registeredInstallationId == installationId) {
-            return
-        }
         scope.launch { registerWithBroker(installationId) }
     }
 

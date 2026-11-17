@@ -108,10 +108,13 @@ class AuthViewModel(
      * Firebase usually produces an installation ID before the Pixel is paired,
      * so the initial attempt from [UniversalAuthMessagingService] is expected to
      * be rejected. This retry runs once the broker trusts this device.
+     *
+     * The upload is attempted unconditionally. Registration is idempotent, and
+     * re-sending also recovers the case where the broker's push registration was
+     * rebuilt or lost while this device still had it cached locally.
      */
     private fun retryPushRegistration(deviceId: String) {
         val store = pushStore ?: return
-        if (!store.needsRegistration()) return
         val installationId = store.installationId ?: return
         viewModelScope.launch {
             val result = repository.registerPushInstallation(

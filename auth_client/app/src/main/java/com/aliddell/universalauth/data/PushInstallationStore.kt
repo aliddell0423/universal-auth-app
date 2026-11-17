@@ -8,8 +8,12 @@ import android.content.SharedPreferences
  *
  * Firebase can hand us an installation ID before the Pixel has been paired with
  * the broker, in which case the broker correctly rejects the registration. The
- * cached value lets the app retry once trust exists, and lets it avoid
- * re-sending an ID the broker already has.
+ * cached value lets the app retry once trust exists.
+ *
+ * This cache is deliberately *not* used to suppress uploads. The broker remains
+ * authoritative about whether an installation ID is registered, so the app
+ * always attempts the (idempotent) upload; [registeredInstallationId] only
+ * records the last ID the broker accepted, for diagnostics.
  *
  * The installation ID is only a delivery address, never a credential.
  */
@@ -25,7 +29,10 @@ class PushInstallationStore(context: Context) {
             }.apply()
         }
 
-    /** The installation ID the broker has already accepted, if any. */
+    /**
+     * The last installation ID the broker accepted, for diagnostics only.
+     * This must not be used to skip an upload.
+     */
     var registeredInstallationId: String?
         get() = prefs.getString(KEY_REGISTERED_ID, null)
         set(value) {
@@ -33,12 +40,6 @@ class PushInstallationStore(context: Context) {
                 if (value == null) remove(KEY_REGISTERED_ID) else putString(KEY_REGISTERED_ID, value)
             }.apply()
         }
-
-    /** True when there is an installation ID the broker has not accepted yet. */
-    fun needsRegistration(): Boolean {
-        val current = installationId ?: return false
-        return current != registeredInstallationId
-    }
 
     private companion object {
         const val KEY_INSTALLATION_ID = "installation_id"
