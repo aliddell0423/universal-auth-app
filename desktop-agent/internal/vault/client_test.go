@@ -26,7 +26,10 @@ func testServer(t *testing.T) *httptest.Server {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		origin := r.URL.Query().Get("origin")
+		origin := r.URL.Query().Get("resource")
+		if origin == "" {
+			origin = r.URL.Query().Get("origin")
+		}
 		switch r.URL.Path {
 		case "/v1/credentials/exists":
 			w.Header().Set("Content-Type", "application/json")

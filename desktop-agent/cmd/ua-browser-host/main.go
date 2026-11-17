@@ -20,6 +20,7 @@ import (
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/nm"
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/release"
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/vault"
+	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/vaultcrypto"
 )
 
 const (
@@ -82,6 +83,10 @@ func handle(req inMessage) outMessage {
 	if req.Type != "get_credential" || req.Origin == "" {
 		return fail(traceID, "UA-BROWSER-002", "browser.validate", "Invalid native message type or missing origin.", "Check the browser extension JSON.", false)
 	}
+	origin, err := vaultcrypto.NormalizeOrigin(req.Origin)
+	if err != nil {
+		return fail(traceID, "UA-BROWSER-002", "browser.validate", "Invalid origin.", "Check the browser extension JSON.", false)
+	}
 
 	cfg, err := config.Load("")
 	if err != nil {
@@ -106,7 +111,7 @@ func handle(req inMessage) outMessage {
 	vaultClient := vault.NewClient(cfg.VaultURL, vaultToken)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	exists, err := vaultClient.CredentialExists(ctx, req.Origin, traceID)
+	exists, err := vaultClient.CredentialExists(ctx, origin, traceID)
 	cancel()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] vault exists check: %v\n", traceID, err)
@@ -117,7 +122,7 @@ func handle(req inMessage) outMessage {
 	}
 
 	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-	pkg, err := vaultClient.GetPackage(ctx, req.Origin, traceID)
+	pkg, err := vaultClient.GetPackage(ctx, origin, traceID)
 	cancel()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] vault package: %v\n", traceID, err)
@@ -139,7 +144,7 @@ func handle(req inMessage) outMessage {
 
 	ctx, cancel = context.WithTimeout(context.Background(), defaultReleaseTimeout)
 	defer cancel()
-	result, err := release.SecureRelease(ctx, req.Origin, pkg, ident, cfg.TrustedDevice.VaultKeyID, brokerClient, traceID, defaultReleaseTimeout, defaultPoll)
+	result, err := release.SecureRelease(ctx, origin, pkg, ident, cfg.TrustedDevice.VaultKeyID, brokerClient, traceID, defaultReleaseTimeout, defaultPoll)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] secure release: %v\n", traceID, err)
 		if err.Error() == "denied" {
@@ -152,8 +157,8 @@ func handle(req inMessage) outMessage {
 	}
 	return outMessage{
 		Status:    "approved",
-		Username:  result.Username,
-		Password:  result.Password,
+		Username:  result.Fields["username"],
+		Password:  result.Fields["password"],
 		TraceID:   result.TraceID,
 		RequestID: result.RequestID,
 	}

@@ -65,8 +65,8 @@ func (c *Client) Ready(ctx context.Context) error {
 	return apierror.FromResponse(resp, "vault.readyz", "UA-VAULT-004")
 }
 
-func (c *Client) CredentialExists(ctx context.Context, origin, traceID string) (bool, error) {
-	u := "/v1/credentials/exists?origin=" + url.QueryEscape(origin)
+func (c *Client) CredentialExists(ctx context.Context, resource, traceID string) (bool, error) {
+	u := "/v1/credentials/exists?resource=" + url.QueryEscape(resource)
 	resp, err := c.do(ctx, http.MethodGet, u, nil, traceID)
 	if err != nil {
 		return false, err
@@ -82,8 +82,17 @@ func (c *Client) CredentialExists(ctx context.Context, origin, traceID string) (
 	return out.Exists, nil
 }
 
-func (c *Client) GetPackage(ctx context.Context, origin, traceID string) (*vaultcrypto.Package, error) {
-	u := "/v1/credentials/package?origin=" + url.QueryEscape(origin)
+func (c *Client) GetPackage(ctx context.Context, resource, traceID string) (*vaultcrypto.Package, error) {
+	return c.GetPackageKind(ctx, resource, "", traceID)
+}
+
+// GetPackageKind fetches a package by resource, restricted to kind when it
+// is non-empty. Use it when a name may exist under more than one kind.
+func (c *Client) GetPackageKind(ctx context.Context, resource, kind, traceID string) (*vaultcrypto.Package, error) {
+	u := "/v1/credentials/package?resource=" + url.QueryEscape(resource)
+	if kind != "" {
+		u += "&kind=" + url.QueryEscape(kind)
+	}
 	resp, err := c.do(ctx, http.MethodGet, u, nil, traceID)
 	if err != nil {
 		return nil, err
@@ -116,6 +125,24 @@ func (c *Client) CreatePackage(ctx context.Context, pkg *vaultcrypto.Package, tr
 		return apierror.FromResponse(resp, "vault.package_create", "UA-VAULT-005")
 	}
 	return nil
+}
+
+// List returns metadata for all stored packages. No secret material is
+// included in the response.
+func (c *Client) List(ctx context.Context, traceID string) ([]CredentialMeta, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/v1/credentials", nil, traceID)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, apierror.FromResponse(resp, "vault.list", "UA-VAULT-004")
+	}
+	var out []CredentialMeta
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *Client) DeletePackage(ctx context.Context, id, traceID string) error {
