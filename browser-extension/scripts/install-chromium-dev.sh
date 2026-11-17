@@ -23,4 +23,4 @@ EOF2
 
 echo "Installed native host to $HOME/.local/bin/ua-browser-host"
 echo "Installed native messaging manifest to $BROWSER_DIR/NativeMessagingHosts/com.aliddell.universalauth.json"
-echo "Load the unpacked extension from brave://extensions (Developer mode) using $PROJECT_ROOT/browser-extension/manifest.chromium.json"
+echo "Load the unpacked extension from brave://extensions (Developer mode) using $PROJECT_ROOT/browser-extension/chromium"
