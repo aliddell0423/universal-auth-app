@@ -330,7 +330,7 @@ Works in Firefox and in Chromium-based browsers such as Brave.
 
 - **Filling.** Click into a password field: a small Universal Auth panel lists the saved logins for the site. Pick one and approve on your phone. Nothing is released until you pick.
 - **Signing up / changing a password.** On new-password fields the panel leads with a generated password. It follows the site's rules when the page declares them (`passwordrules`, `minlength`, `maxlength`, `pattern`); otherwise 20 characters with symbols. **Options** adjusts length and symbols, and **Remember** keeps those choices for the site. **Use password** fills the new and confirm fields.
-- **Saving.** After you submit a form, a banner offers to save the login (or, if that account is already saved, to update its password). It works across the redirect that usually follows a login. Saving is instant; updating needs your fingerprint. Choose **Use on** to save for a parent domain (for example `utexas.edu`) so the login is also offered on its subdomains.
+- **Saving.** After you submit a form, a banner offers to save the login (or, if that account is already saved, to update its password). The banner can follow a redirect within the same origin. For cross-origin sign-ins, use the toolbar to save the login on the sign-in page before submitting. Saving is instant; updating needs your fingerprint. Choose **Use on** to save for a parent domain (for example `utexas.edu`) so the login is also offered on its subdomains.
 - **Toolbar button.** Lists the logins for the current site with Fill, Copy password, Edit and Delete; adds a login; links this site to a login saved for another site; and sets generator options for the site.
 
 ### Matching

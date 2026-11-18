@@ -231,21 +231,27 @@ async function setupGenerator() {
   const r = await send({ type: 'overrides_get' });
   overrides = (r && r.overrides) || null;
   const form = $('#gen-form');
+  const length = form.elements.namedItem('length');
+  const symbols = form.elements.namedItem('symbols');
+  const symbolSet = form.elements.namedItem('symbolSet');
   const sync = () => {
     const p = policy();
-    form.length.value = String(G.effectiveLength(p));
-    form.symbols.checked = !(overrides && overrides.symbols === false);
-    form.symbolSet.value = (overrides && overrides.symbolSet) || '';
+    length.value = String(G.effectiveLength(p));
+    symbols.checked = !(overrides && overrides.symbols === false);
+    symbolSet.value = (overrides && overrides.symbolSet) || '';
     $('#gen-desc').textContent = G.describe(p);
     $('#gen-out').value = generate();
   };
   const read = () => {
-    const o = { length: parseInt(form.length.value, 10) || undefined, symbols: form.symbols.checked };
-    if (form.symbols.checked && form.symbolSet.value.trim()) o.symbolSet = form.symbolSet.value.trim();
+    const o = { length: parseInt(length.value, 10) || undefined, symbols: symbols.checked };
+    if (symbols.checked && symbolSet.value.trim()) o.symbolSet = symbolSet.value.trim();
     overrides = o;
     sync();
   };
-  for (const name of ['length', 'symbols', 'symbolSet']) form[name].addEventListener('change', read);
+  form.addEventListener('submit', (e) => e.preventDefault());
+  for (const control of [length, symbols, symbolSet]) control.addEventListener('change', read);
+  $('#gen-save').disabled = !origin;
+  $('#gen-reset').disabled = !origin;
   $('#gen-again').addEventListener('click', () => { $('#gen-out').value = generate(); });
   $('#gen-copy').addEventListener('click', async () => { await copy($('#gen-out').value); $('#gen-copy').textContent = 'Copied'; });
   $('#gen-save').addEventListener('click', async () => {

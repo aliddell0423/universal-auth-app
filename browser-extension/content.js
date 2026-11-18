@@ -471,6 +471,7 @@ window.addEventListener('scroll', positionMenu, true);
 // Fill requested from the toolbar popup.
 browser.runtime.onMessage.addListener((message) => {
   if (!message || message.type !== 'ua_fill') return;
+  if (message.origin !== location.origin) return Promise.resolve({ status: 'wrong_origin' });
   const active = document.activeElement;
   const field = isPasswordField(active) ? active : passwordFields(document)[0];
   if (!field) return Promise.resolve({ status: 'no_field' });

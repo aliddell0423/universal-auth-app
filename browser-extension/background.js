@@ -43,17 +43,19 @@ function siteKey(origin) {
 
 // Pending saves survive navigation (the login page is replaced by the next
 // page) by living in session storage, keyed by tab.
-const session = browser.storage.session || browser.storage.local;
+const session = browser.storage.session;
 
-async function getPending(tabId) {
+async function getPending(tabId, origin) {
+  if (!session) return null;
   const key = 'pending:' + tabId;
   const got = await session.get(key);
   const p = got[key];
-  if (!p || Date.now() - p.at > PENDING_TTL_MS) return null;
+  if (!p || p.origin !== origin || Date.now() - p.at > PENDING_TTL_MS) return null;
   return p;
 }
 
 async function setPending(tabId, value) {
+  if (!session) return;
   const key = 'pending:' + tabId;
   if (value) await session.set({ [key]: Object.assign({ at: Date.now() }, value) });
   else await session.remove(key);
@@ -101,41 +103,42 @@ async function handleContent(message, origin, tabId) {
       return resp;
     }
     case 'list_pending': {
-      const p = await getPending(tabId);
+      const p = await getPending(tabId, origin);
       if (!p || !p.captured) return { status: 'none' };
       return native({ type: 'list_logins', origin: p.origin });
     }
     case 'save_pending': {
       // Uses the origin recorded when the password was captured, not the
       // page the user has since been redirected to.
-      const p = await getPending(tabId);
+      const p = await getPending(tabId, origin);
       if (!p || !p.captured) return { status: 'error', error: 'Nothing to save any more.' };
       const r = await native({ type: 'save_login', origin: p.origin, username: p.captured.username, password: p.captured.password, account: message.account || '', save_as: message.save_as || '' });
       if (r.status === 'saved') await setPending(tabId, null);
       return r;
     }
     case 'update_pending': {
-      const p = await getPending(tabId);
+      const p = await getPending(tabId, origin);
       if (!p || !p.captured) return { status: 'error', error: 'Nothing to update any more.' };
       const r = await native({ type: 'update_login', origin: p.origin, credential_id: message.credential_id, username: p.captured.username, password: p.captured.password });
       if (r.status === 'updated') await setPending(tabId, null);
       return r;
     }
     case 'capture': {
-      const prev = await getPending(tabId);
-      const filled = prev && prev.origin === origin ? prev.filled : null;
+      if (!session) return { status: 'none' };
+      const prev = await getPending(tabId, origin);
+      const filled = prev?.filled;
       if (filled && filled.password === message.password) return { status: 'unchanged' };
       await setPending(tabId, { origin, filled, captured: { username: message.username || '', password: message.password, generated: !!message.generated } });
       return { status: 'ok' };
     }
     case 'pending': {
-      const p = await getPending(tabId);
+      const p = await getPending(tabId, origin);
       if (!p || !p.captured) return { status: 'none' };
-      // Offer the save on the page that captured it or the page it led to.
-      return { status: 'ok', captured: p.captured, origin: p.origin };
+      // Offer the save only on the origin that captured it.
+      return { status: 'ok', captured: { username: p.captured.username, generated: p.captured.generated }, origin: p.origin };
     }
     case 'dismiss':
-      await setPending(tabId, null);
+      if (await getPending(tabId, origin)) await setPending(tabId, null);
       return { status: 'ok' };
     case 'overrides_get':
       return { status: 'ok', overrides: await getOverrides(origin) };
@@ -162,10 +165,22 @@ async function handlePopup(message) {
     case 'reveal':
       return native({ type: 'get_credential', origin, credential_id: message.credential_id });
     case 'fill_tab': {
+      const tabId = message.tab_id;
+      const currentOrigin = async () => originOf((await browser.tabs.get(tabId)).url);
+      const changed = { status: 'error', error: 'The tab changed sites. Open Universal Auth again to fill.' };
+      if (await currentOrigin() !== origin) return changed;
       const resp = await native({ type: 'get_credential', origin, credential_id: message.credential_id });
       if (resp.status !== 'approved') return resp;
-      await setPending(message.tab_id, { origin, filled: { credential_id: resp.credential_id, password: resp.password } });
-      await browser.tabs.sendMessage(message.tab_id, { type: 'ua_fill', username: resp.username, password: resp.password });
+      if (await currentOrigin() !== origin) return changed;
+      let filled;
+      try {
+        filled = await browser.tabs.sendMessage(tabId, { type: 'ua_fill', origin, username: resp.username, password: resp.password }, { frameId: 0 });
+      } catch (_) {
+        return { status: 'error', error: 'Reload the page and try Fill again.' };
+      }
+      if (filled?.status === 'wrong_origin') return changed;
+      if (filled?.status !== 'filled') return { status: 'error', error: 'No password field found in this page.' };
+      await setPending(tabId, { origin, filled: { credential_id: resp.credential_id, password: resp.password } });
       return { status: 'filled' };
     }
     case 'save':
