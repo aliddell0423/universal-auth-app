@@ -34,9 +34,13 @@ func ValidKind(kind string) bool {
 // CryptoVersion 2 packages use Origin and the {username,password} plaintext.
 // CryptoVersion 3 packages use Kind and Resource with a {fields:{...}} plaintext.
 type Package struct {
-	CredentialID           string `json:"credential_id"`
-	Kind                   string `json:"kind,omitempty"`
-	Resource               string `json:"resource,omitempty"`
+	CredentialID string `json:"credential_id"`
+	Kind         string `json:"kind,omitempty"`
+	Resource     string `json:"resource,omitempty"`
+	// Account is a plaintext label (usually the username) that tells several
+	// accounts for one site apart. It is vault metadata, not part of the
+	// package hash or AAD.
+	Account                string `json:"account,omitempty"`
 	Origin                 string `json:"origin,omitempty"`
 	Ciphertext             string `json:"ciphertext"`
 	CipherNonce            string `json:"cipher_nonce"`

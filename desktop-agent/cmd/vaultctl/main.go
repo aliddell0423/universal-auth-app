@@ -3,12 +3,8 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/ecdsa"
-	"crypto/rand"
-	"crypto/x509"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -19,10 +15,9 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/broker"
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/config"
-	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/identity"
-	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/release"
+	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/logins"
+	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/passgen"
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/sshagent"
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/vault"
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/vaultcrypto"
@@ -33,43 +28,209 @@ func main() {
 		usage()
 		os.Exit(1)
 	}
-	switch os.Args[1] {
-	case "add":
-		add(os.Args[2:])
-	case "get":
-		get(os.Args[2:])
-	case "list":
-		list(os.Args[2:])
-	case "delete":
-		del(os.Args[2:])
-	default:
+	cmds := map[string]func([]string) error{
+		"add": add, "get": get, "list": list, "edit": edit, "delete": del,
+		"generate": generate, "link": link, "unlink": unlink,
+	}
+	run, ok := cmds[os.Args[1]]
+	if !ok {
 		usage()
+		os.Exit(1)
+	}
+	if err := run(os.Args[2:]); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `usage: vaultctl <add|get|list|delete> [flags]
+	fmt.Fprintln(os.Stderr, `usage: vaultctl <command> [flags]
 
-  add      --kind login|secret|ssh_key --origin URL | --name NAME
-           login:   --username U [--password-stdin | prompt]
-           others:  --field KEY=VALUE ... [--field-file KEY=PATH]
-  get      --origin URL | --name NAME [--kind KIND] [--field KEY] [--json]
-           Releases the secret after Pixel approval and prints it.
-  list     Lists stored credentials (metadata only, no secrets).
-  delete   --id CREDENTIAL_ID`)
+Selecting an entry (get, edit, delete):
+  --id CREDENTIAL_ID | --origin URL | --name NAME   [--account LABEL] [--kind KIND]
+
+  add       --origin URL [--account LABEL] --username U
+                [--password-stdin | --generate [--rules R] [--length N] [--no-symbols]]
+            --kind secret|ssh_key --name NAME --field KEY=VALUE ... [--field-file KEY=PATH]
+            Stores a new entry. No Pixel approval is needed.
+  get       <select> [--field KEY] [--json]
+            Releases the entry after Pixel approval and prints it.
+  list      [--origin URL | --name NAME]   Metadata only, no secrets.
+  edit      <select> [--set-origin URL | --set-name NAME] [--set-account LABEL]
+                [--username U] [--password-stdin | --prompt-password | --generate ...]
+                [--field KEY=VALUE ...] [--field-file KEY=PATH] [--remove-field KEY]
+            Changes an entry after Pixel approval. Fields you do not supply are
+            kept, which needs one extra approval to read them first.
+  delete    <select>   Deletes after Pixel approval.
+  generate  [--rules R] [--length N] [--no-symbols] [--symbols SET]
+            Prints a password. R uses the passwordrules syntax, e.g.
+            "minlength: 8; maxlength: 16; required: upper; required: digit; allowed: lower".
+  link      --site URL --to URL   Offer logins saved for --to on --site too.
+  unlink    --site URL --to URL`)
 }
 
-type fieldFlags []string
+// ---- flag helpers ----
 
-func (f *fieldFlags) String() string { return strings.Join(*f, ",") }
-func (f *fieldFlags) Set(v string) error {
+type multiFlag []string
+
+func (f *multiFlag) String() string { return strings.Join(*f, ",") }
+func (f *multiFlag) Set(v string) error {
 	*f = append(*f, v)
 	return nil
 }
 
-func parseFields(pairs fieldFlags, files fieldFlags) (map[string]string, error) {
-	fields := make(map[string]string)
+type selector struct {
+	id, origin, name, account, kind *string
+	accountSet                      bool
+}
+
+func addSelector(fs *flag.FlagSet) *selector {
+	return &selector{
+		id:      fs.String("id", "", "credential id"),
+		origin:  fs.String("origin", "", "login origin, e.g. https://github.com"),
+		name:    fs.String("name", "", "secret name, e.g. api-keys/github"),
+		account: fs.String("account", "", "account label, when a site has several"),
+		kind:    fs.String("kind", "", "restrict to this kind"),
+	}
+}
+
+func (s *selector) parsed(fs *flag.FlagSet) {
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "account" {
+			s.accountSet = true
+		}
+	})
+}
+
+// resolve finds the single entry the selector names.
+func (s *selector) resolve(ctx context.Context, vc *vault.Client) (vault.CredentialMeta, error) {
+	if *s.id != "" {
+		pkg, err := vc.GetPackageByID(ctx, *s.id, "")
+		if err != nil {
+			return vault.CredentialMeta{}, err
+		}
+		return vault.CredentialMeta{CredentialID: pkg.CredentialID, Kind: kindOf(pkg), Resource: pkg.Res(), Account: pkg.Account}, nil
+	}
+	resource, kind, err := resolveResource(*s.origin, *s.name, *s.kind)
+	if err != nil {
+		return vault.CredentialMeta{}, err
+	}
+	items, err := vc.ListResource(ctx, resource, kind, "")
+	if err != nil {
+		return vault.CredentialMeta{}, err
+	}
+	var hits []vault.CredentialMeta
+	for _, m := range items {
+		if !s.accountSet || m.Account == *s.account {
+			hits = append(hits, m)
+		}
+	}
+	switch len(hits) {
+	case 0:
+		return vault.CredentialMeta{}, fmt.Errorf("no saved entry for %s", resource)
+	case 1:
+		return hits[0], nil
+	}
+	var accts []string
+	for _, m := range hits {
+		accts = append(accts, fmt.Sprintf("%q (%s)", m.Account, m.CredentialID))
+	}
+	return vault.CredentialMeta{}, fmt.Errorf("%s has several entries; pick one with --account or --id: %s", resource, strings.Join(accts, ", "))
+}
+
+func resolveResource(origin, name, kind string) (string, string, error) {
+	switch {
+	case origin != "" && name != "":
+		return "", "", errors.New("use only one of --origin or --name")
+	case origin != "":
+		r, err := vaultcrypto.NormalizeOrigin(origin)
+		if kind == "" {
+			kind = vaultcrypto.KindLogin
+		}
+		return r, kind, err
+	case name != "":
+		r, err := vaultcrypto.NormalizeSecretName(name)
+		return r, kind, err
+	default:
+		return "", "", errors.New("one of --id, --origin or --name is required")
+	}
+}
+
+func kindOf(pkg *vaultcrypto.Package) string {
+	if pkg.Kind == "" {
+		return vaultcrypto.KindLogin
+	}
+	return pkg.Kind
+}
+
+type genFlags struct {
+	generate  *bool
+	rules     *string
+	length    *int
+	noSymbols *bool
+	symbols   *string
+}
+
+func addGenFlags(fs *flag.FlagSet, withSwitch bool) *genFlags {
+	g := &genFlags{
+		rules:     fs.String("rules", "", "site password rules (passwordrules syntax)"),
+		length:    fs.Int("length", 0, "password length (default 20, or what --rules allow)"),
+		noSymbols: fs.Bool("no-symbols", false, "letters and digits only"),
+		symbols:   fs.String("symbols", "", "use exactly these symbol characters"),
+	}
+	if withSwitch {
+		g.generate = fs.Bool("generate", false, "generate a strong password")
+	} else {
+		t := true
+		g.generate = &t
+	}
+	return g
+}
+
+func (g *genFlags) password() (string, error) {
+	p := passgen.Default()
+	if *g.rules != "" {
+		var err error
+		if p, err = passgen.ParseRules(*g.rules); err != nil {
+			return "", err
+		}
+	}
+	if *g.noSymbols || *g.symbols != "" {
+		sym := *g.symbols
+		var req []string
+		for _, r := range p.Required {
+			if r != passgen.DefaultSymbols && r != passgen.Special {
+				req = append(req, r)
+			}
+		}
+		if sym != "" {
+			req = append(req, sym)
+		}
+		p.Required = req
+		p.Allowed = passgen.Lower + passgen.Upper + passgen.Digit + sym
+	}
+	if *g.length > 0 {
+		p.Length = *g.length
+	}
+	return passgen.Generate(p)
+}
+
+func readPassword(fromStdin bool) (string, error) {
+	if fromStdin {
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil && line == "" {
+			return "", fmt.Errorf("reading password: %w", err)
+		}
+		return strings.TrimRight(line, "\r\n"), nil
+	}
+	fmt.Fprint(os.Stderr, "Password: ")
+	b, err := term.ReadPassword(int(syscall.Stdin))
+	fmt.Fprintln(os.Stderr)
+	return string(b), err
+}
+
+func parseFields(pairs, files multiFlag) (map[string]string, error) {
+	fields := map[string]string{}
 	for _, p := range pairs {
 		k, v, ok := strings.Cut(p, "=")
 		if !ok || k == "" {
@@ -91,309 +252,351 @@ func parseFields(pairs fieldFlags, files fieldFlags) (map[string]string, error) 
 	return fields, nil
 }
 
-func loadVaultClient() (*config.Config, *vault.Client, error) {
-	cfg, err := config.Load("")
-	if err != nil {
-		return nil, nil, err
-	}
-	if cfg.TrustedDevice.VaultPubKey == "" {
-		return nil, nil, fmt.Errorf("Pixel vault key not paired; run authctl pair again")
-	}
-	if cfg.VaultURL == "" {
-		return nil, nil, fmt.Errorf("vault_url not configured")
-	}
-	token, err := config.LoadVaultToken()
-	if err != nil {
-		return nil, nil, err
-	}
-	return cfg, vault.NewClient(cfg.VaultURL, token), nil
+func ctx10() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 10*time.Second)
 }
 
-func pixelVaultPub(cfg *config.Config) (*ecdsa.PublicKey, error) {
-	vaultDER, err := base64.StdEncoding.DecodeString(cfg.TrustedDevice.VaultPubKey)
-	if err != nil {
-		return nil, err
-	}
-	pubAny, err := x509.ParsePKIXPublicKey(vaultDER)
-	if err != nil {
-		return nil, err
-	}
-	pub, ok := pubAny.(*ecdsa.PublicKey)
-	if !ok {
-		return nil, fmt.Errorf("Pixel vault key is not ECDSA")
-	}
-	return pub, nil
-}
+// ---- commands ----
 
-func add(args []string) {
+func add(args []string) error {
 	fs := flag.NewFlagSet("add", flag.ExitOnError)
-	kind := fs.String("kind", vaultcrypto.KindLogin, "package kind: login, secret or ssh_key")
-	origin := fs.String("origin", "", "login origin, e.g. https://github.com")
-	name := fs.String("name", "", "secret name, e.g. api-keys/github")
-	username := fs.String("username", "", "username for login kind")
-	passwordStdin := fs.Bool("password-stdin", false, "read password from stdin")
-	var fieldPairs, fieldFiles fieldFlags
-	fs.Var(&fieldPairs, "field", "KEY=VALUE field (repeatable)")
-	fs.Var(&fieldFiles, "field-file", "KEY=PATH read field value from file (repeatable)")
-	if err := fs.Parse(args); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
+	kind := fs.String("kind", vaultcrypto.KindLogin, "login, secret or ssh_key")
+	origin := fs.String("origin", "", "login origin")
+	name := fs.String("name", "", "secret name")
+	account := fs.String("account", "", "account label (default: the username)")
+	username := fs.String("username", "", "login username (may be empty)")
+	pwStdin := fs.Bool("password-stdin", false, "read the password from stdin")
+	gen := addGenFlags(fs, true)
+	var pairs, files multiFlag
+	fs.Var(&pairs, "field", "KEY=VALUE (repeatable)")
+	fs.Var(&files, "field-file", "KEY=PATH (repeatable)")
+	_ = fs.Parse(args)
+	accountSet := false
+	fs.Visit(func(f *flag.Flag) { accountSet = accountSet || f.Name == "account" })
 	if !vaultcrypto.ValidKind(*kind) {
-		fmt.Fprintf(os.Stderr, "error: unsupported kind %q\n", *kind)
-		os.Exit(1)
+		return fmt.Errorf("unsupported kind %q", *kind)
 	}
 
-	resource, err := vaultcrypto.NormalizeResource(*kind, resourceArg(*kind, *origin, *name))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	fields := map[string]string{}
+	var fields map[string]string
+	var generated string
+	resource := *name
 	if *kind == vaultcrypto.KindLogin {
-		// Username may be empty: some sites are password-only or the
-		// username varies per account.
-		var password string
-		if *passwordStdin {
-			r := bufio.NewReader(os.Stdin)
-			line, err := r.ReadString('\n')
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error reading password: %v\n", err)
-				os.Exit(1)
+		resource = *origin
+		var pw string
+		var err error
+		if *gen.generate {
+			if pw, err = gen.password(); err != nil {
+				return err
 			}
-			password = strings.TrimRight(line, "\r\n")
-		} else {
-			fmt.Fprint(os.Stderr, "Password: ")
-			b, err := term.ReadPassword(int(syscall.Stdin))
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error reading password: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Fprintln(os.Stderr)
-			password = string(b)
+			generated = pw
+		} else if pw, err = readPassword(*pwStdin); err != nil {
+			return err
 		}
-		if password == "" {
-			fmt.Fprintln(os.Stderr, "error: password is required")
-			os.Exit(1)
+		if pw == "" {
+			return errors.New("password is required")
 		}
-		fields["username"] = *username
-		fields["password"] = password
+		fields = map[string]string{"username": *username, "password": pw}
+		if !accountSet {
+			*account = *username
+		}
 	} else {
-		f, err := parseFields(fieldPairs, fieldFiles)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
+		var err error
+		if fields, err = parseFields(pairs, files); err != nil {
+			return err
 		}
-		if len(f) == 0 {
-			fmt.Fprintln(os.Stderr, "error: at least one --field or --field-file is required")
-			os.Exit(1)
+		if len(fields) == 0 {
+			return errors.New("at least one --field or --field-file is required")
 		}
-		fields = f
 	}
 
-	// Reject unusable SSH keys before storing them, and keep the public half
-	// so ua-ssh-agent can offer the key without releasing it.
-	var sshIdentity *sshagent.Identity
+	var sshID *sshagent.Identity
 	if *kind == vaultcrypto.KindSSHKey {
 		id, err := sshagent.IdentityFromFields(resource, fields)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
+			return err
 		}
-		sshIdentity = &id
+		sshID = &id
 	}
 
-	cfg, vaultClient, err := loadVaultClient()
+	svc, err := logins.Load()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		return err
 	}
-	vaultPub, err := pixelVaultPub(cfg)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	id, err := generateCredentialID()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	pkg, _, err := vaultcrypto.Encrypt(fields, *kind, resource, id, cfg.TrustedDevice.VaultKeyID, vaultPub)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := ctx10()
 	defer cancel()
-	if err := vaultClient.CreatePackage(ctx, pkg, ""); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+	pkg, err := svc.Save(ctx, *kind, resource, *account, fields, "")
+	var exists *logins.ErrExists
+	if errors.As(err, &exists) {
+		return fmt.Errorf("%s already has an entry for account %q (%s); use 'vaultctl edit' or a different --account", resource, *account, exists.CredentialID)
 	}
-	fmt.Printf("Stored %s %s (%s)\n", pkg.Kind, pkg.Resource, pkg.CredentialID)
-	if sshIdentity != nil {
+	if err != nil {
+		return err
+	}
+	label := ""
+	if pkg.Account != "" {
+		label = " [" + pkg.Account + "]"
+	}
+	fmt.Fprintf(os.Stderr, "Stored %s %s%s (%s)\n", pkg.Kind, pkg.Resource, label, pkg.CredentialID)
+	if generated != "" {
+		fmt.Println(generated)
+	}
+	if sshID != nil {
 		cache, err := sshagent.LoadPublicKeyCache(config.SSHPublicKeysPath())
 		if err == nil {
-			err = cache.Put(resource, *sshIdentity)
+			err = cache.Put(pkg.Resource, *sshID)
 		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not cache public key (ua-ssh-agent will ask for one approval to learn it): %v\n", err)
 		}
 	}
+	return nil
 }
 
-func resourceArg(kind, origin, name string) string {
-	if kind == vaultcrypto.KindLogin {
-		return origin
-	}
-	return name
-}
-
-func get(args []string) {
+func get(args []string) error {
 	fs := flag.NewFlagSet("get", flag.ExitOnError)
-	origin := fs.String("origin", "", "login origin")
-	name := fs.String("name", "", "secret name")
-	kind := fs.String("kind", "", "restrict to this kind when a name is used by several")
+	sel := addSelector(fs)
 	field := fs.String("field", "", "print only this field")
-	asJSON := fs.Bool("json", false, "print fields as a JSON object")
+	asJSON := fs.Bool("json", false, "print fields as JSON")
 	timeout := fs.Duration("timeout", 90*time.Second, "approval timeout")
-	if err := fs.Parse(args); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
+	_ = fs.Parse(args)
+	sel.parsed(fs)
 
-	resource, err := resolveResource(*origin, *name)
+	svc, err := logins.Load()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		return err
 	}
-
-	cfg, vaultClient, err := loadVaultClient()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	pkg, err := vaultClient.GetPackageKind(ctx, resource, *kind, "")
+	svc.Timeout = *timeout
+	ctx, cancel := ctx10()
+	meta, err := sel.resolve(ctx, svc.Vault)
 	cancel()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		return err
 	}
-
-	ident, err := identity.LoadOrCreate("")
+	res, _, err := svc.Release(context.Background(), meta.CredentialID, "")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("release failed: %w", err)
 	}
-	brokerToken, err := config.LoadBrokerToken()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	brokerClient := broker.NewClient(cfg.BrokerURL, brokerToken)
-
-	ctx, cancel = context.WithTimeout(context.Background(), *timeout)
-	defer cancel()
-	result, err := release.SecureRelease(ctx, resource, pkg, ident, cfg.TrustedDevice.VaultKeyID, brokerClient, "", *timeout, time.Second)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "release failed: %v\n", err)
-		os.Exit(1)
-	}
-
-	if *asJSON {
-		b, _ := json.Marshal(result.Fields)
+	switch {
+	case *asJSON:
+		b, _ := json.Marshal(res.Fields)
 		fmt.Println(string(b))
-		return
-	}
-	if *field != "" {
-		v, ok := result.Fields[*field]
+	case *field != "":
+		v, ok := res.Fields[*field]
 		if !ok {
-			fmt.Fprintf(os.Stderr, "error: field %q not present\n", *field)
-			os.Exit(1)
+			return fmt.Errorf("field %q not present", *field)
 		}
 		fmt.Println(v)
-		return
-	}
-	keys := make([]string, 0, len(result.Fields))
-	for k := range result.Fields {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		fmt.Printf("%s=%s\n", k, result.Fields[k])
-	}
-}
-
-func resolveResource(origin, name string) (string, error) {
-	switch {
-	case origin != "" && name != "":
-		return "", fmt.Errorf("use only one of --origin or --name")
-	case origin != "":
-		return vaultcrypto.NormalizeOrigin(origin)
-	case name != "":
-		return vaultcrypto.NormalizeSecretName(name)
 	default:
-		return "", fmt.Errorf("one of --origin or --name is required")
+		keys := make([]string, 0, len(res.Fields))
+		for k := range res.Fields {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Printf("%s=%s\n", k, res.Fields[k])
+		}
 	}
+	return nil
 }
 
-func list(args []string) {
+func list(args []string) error {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
-	if err := fs.Parse(args); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	_, vaultClient, err := loadVaultClient()
+	origin := fs.String("origin", "", "only this login origin")
+	name := fs.String("name", "", "only this secret name")
+	_ = fs.Parse(args)
+	svc, err := logins.Load()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := ctx10()
 	defer cancel()
-	items, err := vaultClient.List(ctx, "")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+	var items []vault.CredentialMeta
+	if *origin != "" || *name != "" {
+		resource, kind, err := resolveResource(*origin, *name, "")
+		if err != nil {
+			return err
+		}
+		items, err = svc.Vault.ListResource(ctx, resource, kind, "")
+		if err != nil {
+			return err
+		}
+	} else if items, err = svc.Vault.List(ctx, ""); err != nil {
+		return err
 	}
 	for _, m := range items {
-		fmt.Printf("%-10s %-40s %s (v%d)\n", m.Kind, m.Resource, m.CredentialID, m.CryptoVersion)
+		fmt.Printf("%-8s %-42s %-28s %s\n", m.Kind, m.Resource, m.Account, m.CredentialID)
 	}
+	return nil
 }
 
-func del(args []string) {
+func edit(args []string) error {
+	fs := flag.NewFlagSet("edit", flag.ExitOnError)
+	sel := addSelector(fs)
+	setOrigin := fs.String("set-origin", "", "move a login to this origin")
+	setName := fs.String("set-name", "", "rename a secret")
+	setAccount := fs.String("set-account", "", "new account label")
+	username := fs.String("username", "", "new username")
+	pwStdin := fs.Bool("password-stdin", false, "read the new password from stdin")
+	pwPrompt := fs.Bool("prompt-password", false, "prompt for the new password")
+	gen := addGenFlags(fs, true)
+	var pairs, files, remove multiFlag
+	fs.Var(&pairs, "field", "set KEY=VALUE (repeatable)")
+	fs.Var(&files, "field-file", "set KEY=PATH (repeatable)")
+	fs.Var(&remove, "remove-field", "remove KEY (repeatable)")
+	timeout := fs.Duration("timeout", 90*time.Second, "approval timeout per step")
+	_ = fs.Parse(args)
+	sel.parsed(fs)
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
+	svc, err := logins.Load()
+	if err != nil {
+		return err
+	}
+	svc.Timeout = *timeout
+	ctx, cancel := ctx10()
+	meta, err := sel.resolve(ctx, svc.Vault)
+	cancel()
+	if err != nil {
+		return err
+	}
+	account := meta.Account
+	if set["set-account"] {
+		account = *setAccount
+	}
+	newResource := *setOrigin
+	if *setName != "" {
+		newResource = *setName
+	}
+
+	changes, err := parseFields(pairs, files)
+	if err != nil {
+		return err
+	}
+	var generated string
+	if meta.Kind == vaultcrypto.KindLogin {
+		if set["username"] {
+			changes["username"] = *username
+		}
+		switch {
+		case *gen.generate:
+			if generated, err = gen.password(); err != nil {
+				return err
+			}
+			changes["password"] = generated
+		case *pwStdin || *pwPrompt:
+			pw, err := readPassword(*pwStdin)
+			if err != nil {
+				return err
+			}
+			if pw == "" {
+				return errors.New("password is empty")
+			}
+			changes["password"] = pw
+		}
+	}
+
+	bg := context.Background()
+	if len(changes) == 0 && len(remove) == 0 && newResource == "" {
+		if !set["set-account"] {
+			return errors.New("nothing to change")
+		}
+		fmt.Fprintln(os.Stderr, "Approve the change on the Pixel...")
+		if err := svc.Relabel(bg, meta.CredentialID, account, ""); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Updated %s (%s)\n", meta.Resource, meta.CredentialID)
+		return nil
+	}
+
+	fields := changes
+	complete := meta.Kind == vaultcrypto.KindLogin && set["username"] && changes["password"] != ""
+	if !complete {
+		fmt.Fprintln(os.Stderr, "Approve on the Pixel to read the current values...")
+		res, _, err := svc.Release(bg, meta.CredentialID, "")
+		if err != nil {
+			return fmt.Errorf("release failed: %w", err)
+		}
+		fields = res.Fields
+		for k, v := range changes {
+			fields[k] = v
+		}
+	}
+	for _, k := range remove {
+		delete(fields, k)
+	}
+	fmt.Fprintln(os.Stderr, "Approve the change on the Pixel...")
+	pkg, err := svc.Update(bg, meta.CredentialID, newResource, account, fields, "")
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "Updated %s (%s)\n", pkg.Resource, pkg.CredentialID)
+	if generated != "" {
+		fmt.Println(generated)
+	}
+	return nil
+}
+
+func del(args []string) error {
 	fs := flag.NewFlagSet("delete", flag.ExitOnError)
-	id := fs.String("id", "", "credential id (required)")
-	if err := fs.Parse(args); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	if *id == "" {
-		fmt.Fprintln(os.Stderr, "error: --id is required")
-		os.Exit(1)
-	}
-	_, vaultClient, err := loadVaultClient()
+	sel := addSelector(fs)
+	timeout := fs.Duration("timeout", 90*time.Second, "approval timeout")
+	_ = fs.Parse(args)
+	sel.parsed(fs)
+	svc, err := logins.Load()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := vaultClient.DeletePackage(ctx, *id, ""); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+	svc.Timeout = *timeout
+	ctx, cancel := ctx10()
+	meta, err := sel.resolve(ctx, svc.Vault)
+	cancel()
+	if err != nil {
+		return err
 	}
-	fmt.Printf("Credential deleted: %s\n", *id)
+	fmt.Fprintf(os.Stderr, "Approve deleting %s on the Pixel...\n", meta.Resource)
+	if err := svc.Delete(context.Background(), meta.CredentialID, ""); err != nil {
+		return err
+	}
+	fmt.Printf("Credential deleted: %s\n", meta.CredentialID)
+	return nil
 }
 
-func generateCredentialID() (string, error) {
-	b := make([]byte, 16)
-	_, err := rand.Read(b)
+func generate(args []string) error {
+	fs := flag.NewFlagSet("generate", flag.ExitOnError)
+	gen := addGenFlags(fs, false)
+	_ = fs.Parse(args)
+	pw, err := gen.password()
 	if err != nil {
-		return "", err
+		return err
 	}
-	return hex.EncodeToString(b), nil
+	fmt.Println(pw)
+	return nil
+}
+
+func link(args []string) error   { return aliasCmd("link", args) }
+func unlink(args []string) error { return aliasCmd("unlink", args) }
+
+func aliasCmd(name string, args []string) error {
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	site := fs.String("site", "", "page origin where the login should be offered")
+	to := fs.String("to", "", "origin the login is saved under")
+	_ = fs.Parse(args)
+	if *site == "" || *to == "" {
+		return errors.New("--site and --to are required")
+	}
+	store, err := logins.LoadAliases(logins.AliasesPath())
+	if err != nil {
+		return err
+	}
+	if name == "link" {
+		err = store.Link(*site, *to)
+	} else {
+		err = store.Unlink(*site, *to)
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "%sed %s -> %s\n", name, *site, *to)
+	return nil
 }

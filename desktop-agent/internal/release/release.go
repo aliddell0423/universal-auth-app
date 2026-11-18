@@ -68,6 +68,9 @@ func SecureRelease(
 	if kind != vaultcrypto.KindLogin {
 		what = "secret"
 	}
+	if pkg.Account != "" {
+		what += " (" + pkg.Account + ")"
+	}
 
 	releasePriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

@@ -198,7 +198,7 @@ sys.stdin.buffer.read(length)
 resp = {
     "status": "ok",
     "host_version": "test",
-    "protocol_version": 2,
+    "protocol_version": 3,
     "config_loaded": True,
     "vault_configured": True,
     "pixel_paired": True,

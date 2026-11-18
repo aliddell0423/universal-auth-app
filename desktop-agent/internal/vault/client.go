@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/apierror"
+	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/broker"
 	"github.com/aliddell0423/universal-auth-app/desktop-agent/internal/vaultcrypto"
 )
 
@@ -93,6 +94,24 @@ func (c *Client) GetPackageKind(ctx context.Context, resource, kind, traceID str
 	if kind != "" {
 		u += "&kind=" + url.QueryEscape(kind)
 	}
+	return c.getPackage(ctx, u, traceID)
+}
+
+// GetPackageAccount fetches the package for one account of a resource.
+func (c *Client) GetPackageAccount(ctx context.Context, resource, kind, account, traceID string) (*vaultcrypto.Package, error) {
+	u := "/v1/credentials/package?resource=" + url.QueryEscape(resource) + "&account=" + url.QueryEscape(account)
+	if kind != "" {
+		u += "&kind=" + url.QueryEscape(kind)
+	}
+	return c.getPackage(ctx, u, traceID)
+}
+
+// GetPackageByID fetches a package by credential ID.
+func (c *Client) GetPackageByID(ctx context.Context, id, traceID string) (*vaultcrypto.Package, error) {
+	return c.getPackage(ctx, "/v1/credentials/"+url.PathEscape(id), traceID)
+}
+
+func (c *Client) getPackage(ctx context.Context, u, traceID string) (*vaultcrypto.Package, error) {
 	resp, err := c.do(ctx, http.MethodGet, u, nil, traceID)
 	if err != nil {
 		return nil, err
@@ -130,7 +149,20 @@ func (c *Client) CreatePackage(ctx context.Context, pkg *vaultcrypto.Package, tr
 // List returns metadata for all stored packages. No secret material is
 // included in the response.
 func (c *Client) List(ctx context.Context, traceID string) ([]CredentialMeta, error) {
-	resp, err := c.do(ctx, http.MethodGet, "/v1/credentials", nil, traceID)
+	return c.list(ctx, "/v1/credentials", traceID)
+}
+
+// ListResource returns metadata for every account stored for resource.
+func (c *Client) ListResource(ctx context.Context, resource, kind, traceID string) ([]CredentialMeta, error) {
+	u := "/v1/credentials?resource=" + url.QueryEscape(resource)
+	if kind != "" {
+		u += "&kind=" + url.QueryEscape(kind)
+	}
+	return c.list(ctx, u, traceID)
+}
+
+func (c *Client) list(ctx context.Context, u, traceID string) ([]CredentialMeta, error) {
+	resp, err := c.do(ctx, http.MethodGet, u, nil, traceID)
 	if err != nil {
 		return nil, err
 	}
@@ -145,8 +177,32 @@ func (c *Client) List(ctx context.Context, traceID string) ([]CredentialMeta, er
 	return out, nil
 }
 
-func (c *Client) DeletePackage(ctx context.Context, id, traceID string) error {
-	resp, err := c.do(ctx, http.MethodDelete, "/v1/credentials/"+id, nil, traceID)
+// ReplacePackage overwrites credential id with pkg. approval is the
+// Pixel-approved vault_write request authorising this exact write.
+func (c *Client) ReplacePackage(ctx context.Context, id string, pkg *vaultcrypto.Package, approval *broker.Request, traceID string) error {
+	body, err := json.Marshal(map[string]any{"package": pkg, "approval": approval})
+	if err != nil {
+		return err
+	}
+	resp, err := c.do(ctx, http.MethodPut, "/v1/credentials/"+url.PathEscape(id), body, traceID)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return apierror.FromResponse(resp, "vault.package_update", "UA-VAULT-011")
+	}
+	return nil
+}
+
+// DeletePackage removes credential id. approval is the Pixel-approved
+// vault_write request authorising the delete.
+func (c *Client) DeletePackage(ctx context.Context, id string, approval *broker.Request, traceID string) error {
+	body, err := json.Marshal(map[string]any{"approval": approval})
+	if err != nil {
+		return err
+	}
+	resp, err := c.do(ctx, http.MethodDelete, "/v1/credentials/"+url.PathEscape(id), body, traceID)
 	if err != nil {
 		return err
 	}

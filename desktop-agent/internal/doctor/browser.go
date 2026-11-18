@@ -143,13 +143,16 @@ func checkBrowser() []Result {
 	}
 	out = append(out, newResult("Browser", "host diagnostic handshake", Pass, "", fmt.Sprintf("Host status: %s, config loaded: %v, pixel paired: %v.", resp.Status, resp.ConfigLoaded, resp.PixelPaired), ""))
 
-	if resp.ProtocolVersion != 2 {
-		out = append(out, newResult("Browser", "host protocol version", Fail, "UA-BROWSER-005", fmt.Sprintf("Host protocol version is %d, expected 2.", resp.ProtocolVersion), "Update the ua-browser-host binary to the current version."))
+	if resp.ProtocolVersion != hostProtocolVersion {
+		out = append(out, newResult("Browser", "host protocol version", Fail, "UA-BROWSER-005", fmt.Sprintf("Host protocol version is %d, expected %d.", resp.ProtocolVersion, hostProtocolVersion), "Update the ua-browser-host binary to the current version."))
 	} else {
-		out = append(out, newResult("Browser", "host protocol version", Pass, "", "Host protocol version is 2.", ""))
+		out = append(out, newResult("Browser", "host protocol version", Pass, "", fmt.Sprintf("Host protocol version is %d.", hostProtocolVersion), ""))
 	}
 	return out
 }
+
+// hostProtocolVersion is the native-messaging protocol ua-browser-host speaks.
+const hostProtocolVersion = 3
 
 func runNativeHostDiagnostic(path string) (*diagnoseResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
