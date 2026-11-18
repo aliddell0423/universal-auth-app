@@ -6,6 +6,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 echo "=== Verifying contract fixture sync ==="
 "$ROOT/scripts/verify-contract-fixtures.sh"
 
+echo "=== Browser extension: Chromium copy + generator tests ==="
+"$ROOT/browser-extension/scripts/sync-chromium.sh" --check
+node --test "$ROOT/browser-extension/test/"
+
 for mod in auth-broker vault-service desktop-agent; do
     echo "=== $mod: go test + go vet ==="
     (cd "$ROOT/$mod" && go test ./... && go vet ./...)
