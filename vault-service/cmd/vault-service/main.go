@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"vault-service/internal/api"
+	"vault-service/internal/approval"
 	"vault-service/internal/config"
 	"vault-service/internal/store"
 )
@@ -25,7 +26,18 @@ func main() {
 	}
 	defer db.Close()
 
-	srv := api.NewServer(db, cfg.Token)
+	approver, err := approval.NewVerifier(cfg.ApproverPublicKey)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config: %v\n", err)
+		os.Exit(1)
+	}
+	if approver == nil {
+		fmt.Println("write approvals: not configured; updates and deletes are disabled (set VAULT_APPROVER_PUBLIC_KEY)")
+	} else {
+		fmt.Println("write approvals: enabled")
+	}
+
+	srv := api.NewServer(db, cfg.Token, approver)
 	fmt.Printf("vault-service listening on %s\n", cfg.Addr)
 
 	server := &http.Server{

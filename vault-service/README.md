@@ -36,16 +36,22 @@ go build -o vault-service ./cmd/vault-service
 
 ## API
 
-- `GET /healthz`
-- `GET /v1/credentials` — list metadata only (no passwords).
-- `POST /v1/credentials` — create credential.
-- `GET /v1/credentials/exists?resource=...[&kind=...]` — return `{"exists": true}`.
-- `GET /v1/credentials/package?resource=...[&kind=...]` — retrieve the encrypted package. Returns 409 if the resource exists under several kinds and no `kind` is given.
-- `DELETE /v1/credentials/{id}` — delete.
-
-`resource` is a web origin for `login` packages or a secret name for `secret` and `ssh_key` packages; `origin=` is still accepted as an alias. The list response carries `kind` and `resource` for each entry.
-
 All `/v1/*` endpoints require `Authorization: Bearer <VAULT_TOKEN>`.
+
+- `GET /healthz`, `GET /readyz`
+- `GET /v1/credentials[?resource=...&kind=...]`: list metadata (`credential_id`, `kind`, `resource`, `account`, timestamps). Never secrets.
+- `POST /v1/credentials`: store a new encrypted package. `(kind, resource, account)` must be unique.
+- `GET /v1/credentials/exists?resource=...[&kind=...]`
+- `GET /v1/credentials/package?resource=...[&kind=...][&account=...]`: fetch the encrypted package. Returns 409 if several entries match.
+- `GET /v1/credentials/{id}`: fetch the encrypted package by ID.
+- `PUT /v1/credentials/{id}` with `{"package": ..., "approval": <approved vault_write broker request>}`: replace the package (same credential ID and kind; resource and account may change).
+- `DELETE /v1/credentials/{id}` with `{"approval": ...}`: delete.
+
+`resource` is a web origin for `login` packages or a secret name for `secret` and `ssh_key` packages; `origin=` is accepted as an alias.
+
+### Write approvals
+
+`PUT` and `DELETE` need a Pixel-approved broker request of kind `vault_write`. Its `client_nonce` must equal `base64url(sha256(canonical write))` (format pinned by `testdata/contracts/vault_write_canonical.txt`), its `resource` must be the credential's current resource, and its signature must verify against `VAULT_APPROVER_PUBLIC_KEY`. Each approval is accepted once. Without `VAULT_APPROVER_PUBLIC_KEY`, `PUT` and `DELETE` return 503.
 
 ## Encryption
 

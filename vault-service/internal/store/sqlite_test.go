@@ -136,7 +136,7 @@ func TestDelete(t *testing.T) {
 	in := newPackage(t, "https://github.com")
 	c, _ := db.CreateCredential(context.Background(), in)
 
-	if err := db.Delete(context.Background(), c.CredentialID); err != nil {
+	if err := db.Delete(context.Background(), c.CredentialID, "approval-1"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	_, err := db.GetPackageByResource(context.Background(), "https://github.com", "")
@@ -369,5 +369,139 @@ func testMigrateV2ToV3(t *testing.T, tracked bool, userVersion int) {
 	sec := newPackageV3(t, model.KindSecret, "api-keys/github")
 	if _, err := store.CreateCredential(context.Background(), sec); err != nil {
 		t.Fatalf("create after migration: %v", err)
+	}
+}
+
+func TestMultipleAccountsPerSite(t *testing.T) {
+	db := tempDB(t)
+	defer db.Close()
+	ctx := context.Background()
+
+	personal := newPackageV3(t, model.KindLogin, "https://accounts.google.com")
+	personal.Account = "me@gmail.com"
+	work := newPackageV3(t, model.KindLogin, "https://accounts.google.com")
+	work.Account = "me@work.com"
+	if _, err := db.CreateCredential(ctx, personal); err != nil {
+		t.Fatalf("create personal: %v", err)
+	}
+	if _, err := db.CreateCredential(ctx, work); err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	dup := newPackageV3(t, model.KindLogin, "https://accounts.google.com")
+	dup.Account = "me@work.com"
+	if _, err := db.CreateCredential(ctx, dup); err == nil {
+		t.Fatal("same site + account must conflict")
+	}
+
+	list, err := db.ListFiltered(ctx, "https://accounts.google.com", model.KindLogin)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("list: %v / %d", err, len(list))
+	}
+	if list[0].Account != "me@gmail.com" || list[1].Account != "me@work.com" {
+		t.Fatalf("accounts: %+v", list)
+	}
+	if _, err := db.GetPackageByResource(ctx, "https://accounts.google.com", model.KindLogin); !errors.Is(err, ErrAmbiguous) {
+		t.Fatalf("expected ErrAmbiguous, got %v", err)
+	}
+	acct := "me@work.com"
+	got, err := db.GetPackage(ctx, "https://accounts.google.com", model.KindLogin, &acct)
+	if err != nil || got.CredentialID != work.CredentialID || got.Account != acct {
+		t.Fatalf("get by account: %v / %+v", err, got)
+	}
+	byID, err := db.GetPackageByID(ctx, personal.CredentialID)
+	if err != nil || byID.Account != "me@gmail.com" {
+		t.Fatalf("get by id: %v / %+v", err, byID)
+	}
+	if _, err := db.GetPackageByID(ctx, "deadbeef"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing id: %v", err)
+	}
+	bad := newPackageV3(t, model.KindLogin, "https://x.com")
+	bad.Account = "two\nlines"
+	if _, err := db.CreateCredential(ctx, bad); err == nil {
+		t.Fatal("multi-line account must be rejected")
+	}
+}
+
+func TestReplaceAndDeleteConsumeApproval(t *testing.T) {
+	db := tempDB(t)
+	defer db.Close()
+	ctx := context.Background()
+
+	orig := newPackageV3(t, model.KindLogin, "https://utexas.edu")
+	orig.Account = "ajl"
+	if _, err := db.CreateCredential(ctx, orig); err != nil {
+		t.Fatal(err)
+	}
+	upd := newPackageV3(t, model.KindLogin, "https://enterprise.login.utexas.edu")
+	upd.CredentialID = orig.CredentialID
+	upd.Account = "ajl5646"
+	got, err := db.Replace(ctx, orig.CredentialID, upd, "req-1")
+	if err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	if got.Resource != "https://enterprise.login.utexas.edu" || got.Account != "ajl5646" || got.Ciphertext != upd.Ciphertext {
+		t.Fatalf("replaced: %+v", got)
+	}
+	if _, err := db.Replace(ctx, orig.CredentialID, upd, "req-1"); !errors.Is(err, ErrApprovalReused) {
+		t.Fatalf("reused approval: %v", err)
+	}
+	kindChange := upd
+	kindChange.Kind = model.KindSecret
+	kindChange.Resource = "x/y"
+	if _, err := db.Replace(ctx, orig.CredentialID, kindChange, "req-2"); err == nil {
+		t.Fatal("kind change must be rejected")
+	}
+	otherID := upd
+	otherID.CredentialID = randomHex(t, 16)
+	if _, err := db.Replace(ctx, orig.CredentialID, otherID, "req-3"); err == nil {
+		t.Fatal("mismatched credential_id must be rejected")
+	}
+	if err := db.Delete(ctx, orig.CredentialID, "req-1"); !errors.Is(err, ErrApprovalReused) {
+		t.Fatalf("delete with used approval: %v", err)
+	}
+	if _, err := db.GetPackageByID(ctx, orig.CredentialID); err != nil {
+		t.Fatalf("failed delete must leave the credential: %v", err)
+	}
+	if err := db.Delete(ctx, orig.CredentialID, "req-4"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+}
+
+func TestMigrateV3ToV4(t *testing.T) {
+	raw, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	raw.SetMaxOpenConns(1)
+	if _, err := raw.Exec(`
+		CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+		INSERT INTO schema_migrations (version, applied_at) VALUES (3, '2026-01-01T00:00:00Z');
+		CREATE TABLE credentials (
+			id TEXT PRIMARY KEY, kind TEXT NOT NULL, resource TEXT NOT NULL,
+			ciphertext BLOB NOT NULL, cipher_nonce BLOB NOT NULL, wrapped_dek BLOB NOT NULL,
+			wrap_nonce BLOB NOT NULL, wrap_ephemeral_public_key BLOB NOT NULL,
+			pixel_vault_key_id TEXT NOT NULL, crypto_version INTEGER NOT NULL,
+			created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(kind, resource));
+		INSERT INTO credentials VALUES ('abc123','login','https://github.com','Y2lwaGVy','bm9uY2U','ZGVr','d3JhcA','a2V5','pix',3,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+		PRAGMA user_version = 3;
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if incompat, err := applyMigrations(raw); err != nil || incompat {
+		t.Fatalf("migrate: %v / %v", incompat, err)
+	}
+	db := &DB{db: raw}
+	if err := db.Ready(); err != nil {
+		t.Fatalf("ready: %v", err)
+	}
+	got, err := db.GetPackageByID(context.Background(), "abc123")
+	if err != nil || got.Resource != "https://github.com" || got.Account != "" {
+		t.Fatalf("migrated row: %v / %+v", err, got)
+	}
+	second := newPackageV3(t, model.KindLogin, "https://github.com")
+	second.Account = "work"
+	if _, err := db.CreateCredential(context.Background(), second); err != nil {
+		t.Fatalf("second account after migration: %v", err)
 	}
 }

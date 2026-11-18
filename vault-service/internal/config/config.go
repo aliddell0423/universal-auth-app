@@ -9,6 +9,9 @@ type Config struct {
 	Token  string
 	Addr   string
 	DBPath string
+	// ApproverPublicKey is the Pixel approval key (standard-Base64 SPKI) that
+	// must sign overwrites and deletes. Empty disables those operations.
+	ApproverPublicKey string
 }
 
 func Load() (*Config, error) {
@@ -27,8 +30,9 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
-		Token:  token,
-		Addr:   addr,
-		DBPath: db,
+		Token:             token,
+		Addr:              addr,
+		DBPath:            db,
+		ApproverPublicKey: os.Getenv("VAULT_APPROVER_PUBLIC_KEY"),
 	}, nil
 }

@@ -6,6 +6,7 @@ type CredentialPackage struct {
 	CredentialID           string `json:"credential_id"`
 	Kind                   string `json:"kind,omitempty"`
 	Resource               string `json:"resource,omitempty"`
+	Account                string `json:"account,omitempty"`
 	Origin                 string `json:"origin,omitempty"`
 	Ciphertext             string `json:"ciphertext"`
 	CipherNonce            string `json:"cipher_nonce"`
@@ -21,6 +22,7 @@ type CredentialMeta struct {
 	CredentialID    string `json:"credential_id"`
 	Kind            string `json:"kind"`
 	Resource        string `json:"resource"`
+	Account         string `json:"account"`
 	PixelVaultKeyID string `json:"pixel_vault_key_id"`
 	CryptoVersion   int    `json:"crypto_version"`
 	CreatedAt       string `json:"created_at"`
@@ -32,6 +34,7 @@ type CredentialPackageInput struct {
 	CredentialID           string `json:"credential_id"`
 	Kind                   string `json:"kind"`
 	Resource               string `json:"resource"`
+	Account                string `json:"account,omitempty"`
 	Origin                 string `json:"origin"`
 	Ciphertext             string `json:"ciphertext"`
 	CipherNonce            string `json:"cipher_nonce"`
@@ -41,3 +44,7 @@ type CredentialPackageInput struct {
 	PixelVaultKeyID        string `json:"pixel_vault_key_id"`
 	CryptoVersion          int    `json:"crypto_version"`
 }
+
+// MaxAccountLen bounds the account label, which is stored as plaintext
+// metadata so the account picker works without a release.
+const MaxAccountLen = 256

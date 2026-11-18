@@ -64,7 +64,7 @@ func testServer(t *testing.T) (*httptest.Server, *store.DB) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	srv := NewServer(db, "test-token")
+	srv := NewServer(db, "test-token", nil)
 	return httptest.NewServer(srv.Handler()), db
 }
 

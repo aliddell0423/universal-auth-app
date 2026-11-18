@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"vault-service/internal/approval"
 	"vault-service/internal/model"
 	"vault-service/internal/store"
 )
@@ -20,12 +21,39 @@ const (
 )
 
 type Server struct {
-	store *store.DB
-	token string
+	store    *store.DB
+	token    string
+	approver *approval.Verifier
 }
 
-func NewServer(db *store.DB, token string) *Server {
-	return &Server{store: db, token: token}
+// NewServer builds the API. approver may be nil, in which case overwrites and
+// deletes are refused.
+func NewServer(db *store.DB, token string, approver *approval.Verifier) *Server {
+	return &Server{store: db, token: token, approver: approver}
+}
+
+// replaceBody is the PUT /v1/credentials/{id} body. Approval is the broker's
+// request record, decoded leniently because the broker may add fields; only
+// the signed fields matter.
+type replaceBody struct {
+	Package  model.CredentialPackageInput `json:"package"`
+	Approval json.RawMessage              `json:"approval"`
+}
+
+// deleteBody is the DELETE /v1/credentials/{id} body.
+type deleteBody struct {
+	Approval json.RawMessage `json:"approval"`
+}
+
+func parseApproval(raw json.RawMessage) (*approval.Request, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var req approval.Request
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, err
+	}
+	return &req, nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -87,8 +115,13 @@ func (s *Server) handleCredentials(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
-	meta, err := s.store.List(r.Context())
+	resource, kind := resourceParams(r)
+	meta, err := s.store.ListFiltered(r.Context(), resource, kind)
 	if err != nil {
+		if strings.Contains(err.Error(), "invalid resource") {
+			writeApiError(w, http.StatusBadRequest, "UA-VAULT-003", "vault.list", err.Error(), "Check the resource parameter.", false)
+			return
+		}
 		writeApiError(w, http.StatusInternalServerError, "UA-VAULT-004", "vault.list", "Failed to list credentials.", "Check the vault service logs.", false)
 		return
 	}
@@ -146,14 +179,19 @@ func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request) {
 		writeApiError(w, http.StatusBadRequest, "UA-VAULT-003", "vault.package_fetch", "resource query parameter is required", "Provide a resource.", false)
 		return
 	}
-	pkg, err := s.store.GetPackageByResource(r.Context(), resource, kind)
+	var account *string
+	if r.URL.Query().Has("account") {
+		a := r.URL.Query().Get("account")
+		account = &a
+	}
+	pkg, err := s.store.GetPackage(r.Context(), resource, kind, account)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeApiError(w, http.StatusNotFound, "UA-VAULT-002", "vault.package_fetch", "credential not found", "Store a credential for this resource.", false)
 			return
 		}
 		if errors.Is(err, store.ErrAmbiguous) {
-			writeApiError(w, http.StatusConflict, "UA-VAULT-002", "vault.package_fetch", "multiple credentials match resource", "Specify the kind query parameter.", false)
+			writeApiError(w, http.StatusConflict, "UA-VAULT-009", "vault.package_fetch", "multiple credentials match resource", "Specify kind or account, or fetch by credential ID.", false)
 			return
 		}
 		writeApiError(w, http.StatusInternalServerError, "UA-VAULT-004", "vault.package_fetch", "Failed to retrieve credential.", "Check the vault service logs.", false)
@@ -165,24 +203,117 @@ func (s *Server) handlePackage(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCredentialByID(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/credentials/")
-	if id == "" || strings.HasSuffix(id, "/") {
-		writeApiError(w, http.StatusNotFound, "UA-VAULT-002", "vault.delete", "credential not found", "Provide a valid credential ID.", false)
+	if id == "" || strings.Contains(id, "/") {
+		writeApiError(w, http.StatusNotFound, "UA-VAULT-002", "vault.credential", "credential not found", "Provide a valid credential ID.", false)
 		return
 	}
-	if r.Method != http.MethodDelete {
-		writeApiError(w, http.StatusMethodNotAllowed, "UA-VAULT-007", "vault.delete", "method not allowed", "Use DELETE.", false)
-		return
-	}
-	if err := s.store.Delete(r.Context(), id); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeApiError(w, http.StatusNotFound, "UA-VAULT-002", "vault.delete", "credential not found", "Provide a valid credential ID.", false)
+	switch r.Method {
+	case http.MethodGet:
+		pkg, err := s.store.GetPackageByID(r.Context(), id)
+		if err != nil {
+			s.writeStoreError(w, err, "vault.package_fetch")
 			return
 		}
-		writeApiError(w, http.StatusInternalServerError, "UA-VAULT-004", "vault.delete", "Failed to delete credential.", "Check the vault service logs.", false)
+		writeJSON(w, http.StatusOK, pkg)
+	case http.MethodPut:
+		s.handleReplace(w, r, id)
+	case http.MethodDelete:
+		s.handleDelete(w, r, id)
+	default:
+		writeApiError(w, http.StatusMethodNotAllowed, "UA-VAULT-007", "vault.credential", "method not allowed", "Use GET, PUT or DELETE.", false)
+	}
+}
+
+func (s *Server) handleReplace(w http.ResponseWriter, r *http.Request, id string) {
+	var body replaceBody
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeApiError(w, http.StatusBadRequest, "UA-VAULT-003", "vault.update", "malformed or invalid JSON", "Check the request body.", false)
+		return
+	}
+	current, err := s.store.GetPackageByID(r.Context(), id)
+	if err != nil {
+		s.writeStoreError(w, err, "vault.update")
+		return
+	}
+	appr, err := parseApproval(body.Approval)
+	if err != nil {
+		writeApiError(w, http.StatusBadRequest, "UA-VAULT-003", "vault.update", "malformed approval", "Check the request body.", false)
+		return
+	}
+	op := approval.Op{Op: approval.OpUpdate, CredentialID: id, Package: &body.Package}
+	if err := s.approver.Verify(appr, op, resourceOf(current)); err != nil {
+		writeApprovalError(w, err, "vault.update")
+		return
+	}
+	pkg, err := s.store.Replace(r.Context(), id, body.Package, appr.ID)
+	if err != nil {
+		s.writeStoreError(w, err, "vault.update")
+		return
+	}
+	writeJSON(w, http.StatusOK, pkg)
+	log.Printf("[trace=%s] package replaced id=%s resource=%s approval=%s", traceID(r), id, resourceOf(pkg), appr.ID)
+}
+
+func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request, id string) {
+	var body deleteBody
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeApiError(w, http.StatusBadRequest, "UA-VAULT-003", "vault.delete", "malformed or invalid JSON", "Send {\"approval\": ...}.", false)
+		return
+	}
+	current, err := s.store.GetPackageByID(r.Context(), id)
+	if err != nil {
+		s.writeStoreError(w, err, "vault.delete")
+		return
+	}
+	appr, err := parseApproval(body.Approval)
+	if err != nil {
+		writeApiError(w, http.StatusBadRequest, "UA-VAULT-003", "vault.delete", "malformed approval", "Check the request body.", false)
+		return
+	}
+	op := approval.Op{Op: approval.OpDelete, CredentialID: id}
+	if err := s.approver.Verify(appr, op, resourceOf(current)); err != nil {
+		writeApprovalError(w, err, "vault.delete")
+		return
+	}
+	if err := s.store.Delete(r.Context(), id, appr.ID); err != nil {
+		s.writeStoreError(w, err, "vault.delete")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-	log.Printf("[trace=%s] package deleted id=%s", traceID(r), id)
+	log.Printf("[trace=%s] package deleted id=%s approval=%s", traceID(r), id, appr.ID)
+}
+
+func resourceOf(p model.CredentialPackage) string {
+	if p.Resource != "" {
+		return p.Resource
+	}
+	return p.Origin
+}
+
+func (s *Server) writeStoreError(w http.ResponseWriter, err error, stage string) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeApiError(w, http.StatusNotFound, "UA-VAULT-002", stage, "credential not found", "Provide a valid credential ID.", false)
+	case errors.Is(err, store.ErrApprovalReused):
+		writeApiError(w, http.StatusConflict, "UA-VAULT-010", stage, err.Error(), "Request a new approval.", false)
+	case strings.Contains(err.Error(), "already exists"):
+		writeApiError(w, http.StatusConflict, "UA-VAULT-002", stage, "credential already exists for this resource and account", "Use a different account label.", false)
+	case strings.Contains(err.Error(), "required"), strings.Contains(err.Error(), "must"),
+		strings.Contains(err.Error(), "unsupported"), strings.Contains(err.Error(), "cannot change"),
+		strings.Contains(err.Error(), "invalid"):
+		writeApiError(w, http.StatusBadRequest, "UA-VAULT-003", stage, err.Error(), "Check the credential package.", false)
+	default:
+		log.Printf("%s: %v", stage, err)
+		writeApiError(w, http.StatusInternalServerError, "UA-VAULT-004", stage, "Vault storage error.", "Check the vault service logs.", false)
+	}
+}
+
+func writeApprovalError(w http.ResponseWriter, err error, stage string) {
+	status := http.StatusForbidden
+	if errors.Is(err, approval.ErrNotConfigured) {
+		status = http.StatusServiceUnavailable
+	}
+	writeApiError(w, status, "UA-VAULT-011", stage, err.Error(), "Approve the change on the Pixel and retry.", false)
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
