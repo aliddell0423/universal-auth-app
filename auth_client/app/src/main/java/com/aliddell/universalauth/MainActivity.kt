@@ -234,10 +234,11 @@ class MainActivity : FragmentActivity() {
             try {
                 val signature = keyManager.createSignature()
                 pendingBiometricRequest = request
+                val isVaultWrite = request.kind == "vault_write"
                 val promptInfo = BiometricPrompt.PromptInfo.Builder()
-                    .setTitle("Approve authentication request")
-                    .setSubtitle("${request.source} / ${request.resource}")
-                    .setDescription("Authenticate to approve this request")
+                    .setTitle(if (isVaultWrite) "Change saved login" else "Approve authentication request")
+                    .setSubtitle(if (isVaultWrite) request.resource else "${request.source} / ${request.resource}")
+                    .setDescription(if (isVaultWrite) request.message else "Authenticate to approve this request")
                     .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
                     .setConfirmationRequired(true)
                     .setNegativeButtonText("Cancel")

@@ -149,13 +149,10 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *Store, pusher p
 	notifyPush(store, pusher, req)
 }
 
-// notifyPush delivers a doorbell notification for credential release
-// requests. Push is best-effort: failures are logged, never surfaced to the
-// requester, and carry only the request ID.
+// notifyPush delivers a doorbell notification for a new request. Push is
+// best-effort: failures are logged, never surfaced to the requester, and
+// carry only the request ID.
 func notifyPush(store *Store, pusher push.Sender, req *Request) {
-	if req.Kind != "credential_release" {
-		return
-	}
 	target, err := store.PushRegistration()
 	if err != nil || target == nil {
 		return

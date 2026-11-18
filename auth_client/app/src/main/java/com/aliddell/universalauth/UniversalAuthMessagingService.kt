@@ -101,7 +101,7 @@ class UniversalAuthMessagingService : FirebaseMessagingService() {
         val notification = Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(applicationInfo.icon)
             .setContentTitle("Universal Auth")
-            .setContentText("A credential release needs your approval")
+            .setContentText("A request needs your approval")
             .setContentIntent(launch)
             .setAutoCancel(true)
             .setCategory(Notification.CATEGORY_REMINDER)

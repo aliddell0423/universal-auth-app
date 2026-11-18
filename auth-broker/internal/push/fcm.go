@@ -103,7 +103,7 @@ func (s *FCMSender) SendCredentialRequest(ctx context.Context, installationID, r
 				"priority": "HIGH",
 				"notification": map[string]string{
 					"title": "Universal Auth",
-					"body":  "A credential release is waiting for approval",
+					"body":  "A request is waiting for your approval",
 				},
 			},
 		},
