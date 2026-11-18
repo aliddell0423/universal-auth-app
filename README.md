@@ -319,36 +319,43 @@ Push notifications: when `FCM_SERVICE_ACCOUNT_FILE` is set in `~/.config/auth-br
 
 ## Browser extension
 
-Works in Firefox (temporary add-on via `about:debugging`, or the install script) and in Chromium-based browsers such as Brave: load `browser-extension/manifest.chromium.json` unpacked from `brave://extensions` with Developer mode on, after running `browser-extension/scripts/install-chromium-dev.sh` (it builds `ua-browser-host` and writes the native-messaging manifest). The `key` in the Chromium manifest pins the extension ID, which the native host allowlist depends on.
+Works in Firefox and in Chromium-based browsers such as Brave.
 
-`browser-extension/` is a Firefox MV3 prototype that fills a login form after Pixel biometric approval. It uses the `vault-service` for credential storage.
+- **Brave/Chromium:** run `browser-extension/scripts/install-chromium-dev.sh` (builds `ua-browser-host` and writes the native-messaging manifest), then in `brave://extensions` turn on Developer mode, **Load unpacked**, and pick `browser-extension/chromium/`. The `key` in its manifest pins the extension ID the host allowlist expects. After pulling changes, click the reload icon on the extension card.
+- **Firefox:** `browser-extension/scripts/install-firefox-dev.sh`, then load `browser-extension/manifest.json` from `about:debugging`.
 
-### Native host
+`browser-extension/chromium/` differs from the Firefox build only by its manifest; after editing the shared sources run `browser-extension/scripts/sync-chromium.sh` (`verify-all.sh` fails if you forget).
 
-The native host `ua-browser-host` is launched by Firefox Native Messaging. It:
+### Using it
 
-1. Receives a browser-derived origin.
-2. Asks `vault-service` whether a credential exists (metadata only).
-3. If found, creates a Universal Auth `credential_access` request.
-4. Only after Fedora independently verifies the Pixel signature does it call the vault secret endpoint.
-5. Returns the username/password to the extension, which fills the form.
+- **Filling.** Click into a password field: a small Universal Auth panel lists the saved logins for the site. Pick one and approve on your phone. Nothing is released until you pick.
+- **Signing up / changing a password.** On new-password fields the panel leads with a generated password. It follows the site's rules when the page declares them (`passwordrules`, `minlength`, `maxlength`, `pattern`); otherwise 20 characters with symbols. **Options** adjusts length and symbols, and **Remember** keeps those choices for the site. **Use password** fills the new and confirm fields.
+- **Saving.** After you submit a form, a banner offers to save the login (or, if that account is already saved, to update its password). It works across the redirect that usually follows a login. Saving is instant; updating needs your fingerprint. Choose **Use on** to save for a parent domain (for example `utexas.edu`) so the login is also offered on its subdomains.
+- **Toolbar button.** Lists the logins for the current site with Fill, Copy password, Edit and Delete; adds a login; links this site to a login saved for another site; and sets generator options for the site.
 
-### Install
+### Matching
 
-```bash
-./browser-extension/scripts/install-firefox-dev.sh
-```
+A login is offered on a page when it was saved for that exact origin, for the same host with or without `www.`, for a parent domain (`utexas.edu` is offered on `enterprise.login.utexas.edu`, never the reverse), or when you linked the page to it. Scheme and port must match, IP addresses match exactly, and lookalikes such as `utexas.edu.evil.com` never match. Links live in `~/.config/universal-auth/site-aliases.json` on this computer, not in the vault, so neither the server nor a web page can change where a login is offered.
 
-Configure `~/.config/universal-auth/config.json` with `vault_url`, store `~/.config/universal-auth/vault.token` (mode `0600`) if `VAULT_TOKEN` is not exported, and create a fake credential through the vault API. See `browser-extension/README.md` and `vault-service/README.md` for the manual test procedure.
+### Several accounts per site
 
-### Security notes for the browser prototype
+Each login has an account label (default: the username), and a site can hold one login per label. With several, the panel and `vaultctl get --account` choose between them. Labels are stored unencrypted in the vault so the picker works without a fingerprint, the same way site origins already are. Passwords and usernames inside the encrypted payload stay encrypted.
 
-- The extension never receives the broker token, vault token, or Pixel private key.
-- The background script derives the origin from `sender.url`; the page cannot request an arbitrary origin.
-- Credential lookup is exact string matching; `https://github.com` does not match `https://github.com.attacker.example`.
-- Credentials are returned only after a locally verified Pixel signature.
-- The form is not submitted automatically.
-- `ua-browser-host` does not decrypt the credential until the Pixel signature is verified.
+### Approvals
+
+| Action | Fingerprint |
+| --- | --- |
+| Fill, copy or reveal a password | yes |
+| Save a new login | no (encryption only needs the Pixel's public key) |
+| Change or delete a saved login | yes |
+
+Changes and deletes are enforced by the vault, not just the tools. The desktop opens a `vault_write` request whose nonce is a hash of the exact change. The vault applies the change only with the Pixel's signature over that request, checked against the Pixel approval key in `VAULT_APPROVER_PUBLIC_KEY` (standard-Base64 SPKI, the `public_key` from the desktop config), and it accepts each approval once.
+
+### Security notes
+
+- The extension never receives the broker token, vault token, or any Pixel key.
+- Origins always come from the browser (`sender.url`), never from page data. The host releases a login only if it is offered on the requesting origin, and saves only under that origin or one of its parent domains.
+- Forms are never submitted automatically.
 
 ## Secure Release v1
 
@@ -382,18 +389,31 @@ Names are lowercase letters, digits and `. _ - /`, up to 128 characters. Kind an
 ```bash
 cd desktop-agent
 
-# store
-go run ./cmd/vaultctl add --origin https://github.com --username andrew
-go run ./cmd/vaultctl add --kind secret --name api-keys/openai --field API_KEY=sk-... --field ORG=me
-go run ./cmd/vaultctl add --kind ssh_key --name ssh/github --field-file private_key=$HOME/.ssh/id_ed25519
+# store (no approval)
+vaultctl add --origin https://github.com --username andrew                 # prompts for the password
+vaultctl add --origin https://github.com --username work@corp.com --generate --rules "maxlength: 16; required: upper; required: digit; allowed: lower"
+vaultctl add --kind secret --name api-keys/openai --field API_KEY=sk-... --field ORG=me
+vaultctl add --kind ssh_key --name ssh/github --field-file private_key=$HOME/.ssh/id_ed25519
 
-# inspect (metadata only, no approval needed)
-go run ./cmd/vaultctl list
+# inspect (metadata only, no approval)
+vaultctl list
+vaultctl list --origin https://github.com
 
-# release: each call needs one approval on the Pixel
-go run ./cmd/vaultctl get --name api-keys/openai --field API_KEY
-go run ./cmd/vaultctl get --name api-keys/openai --json
+# release: one approval each
+vaultctl get --origin https://github.com --account work@corp.com --field password
+vaultctl get --name api-keys/openai --json
 export OPENAI_API_KEY="$(vaultctl get --name api-keys/openai --field API_KEY)"
+
+# change: one approval, plus one to read current values you don't supply
+vaultctl edit --origin https://github.com --account andrew --generate        # new password, keeps username
+vaultctl edit --id <id> --set-origin https://login.github.com
+vaultctl edit --id <id> --set-account personal                              # label only: one approval
+vaultctl delete --id <id>
+
+# helpers
+vaultctl generate --length 24
+vaultctl generate --rules "minlength: 8; maxlength: 12; required: upper; required: digit; allowed: lower"
+vaultctl link --site https://m.facebook.com --to https://www.facebook.com
 ```
 
 `--field KEY=VALUE` puts the value in your shell history and process list; prefer `--field-file KEY=PATH` for anything sensitive.
