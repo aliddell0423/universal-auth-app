@@ -152,10 +152,8 @@ func add(args []string) {
 
 	fields := map[string]string{}
 	if *kind == vaultcrypto.KindLogin {
-		if *username == "" {
-			fmt.Fprintln(os.Stderr, "error: --username is required for login kind")
-			os.Exit(1)
-		}
+		// Username may be empty: some sites are password-only or the
+		// username varies per account.
 		var password string
 		if *passwordStdin {
 			r := bufio.NewReader(os.Stdin)
